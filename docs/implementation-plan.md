@@ -87,6 +87,26 @@ Phased, each phase produces a runnable system that passes its own tests.
 - Fixture tree in `fixtures/tree/` used for round-trip tests
 - `ctx import` / `ctx export` CLI commands
 
+## Phase 10 — embedding backend ✅
+
+- `Embedder` protocol in `embedding.py` with a single `embed(text) -> list[float]` method
+- `HashEmbedder(dim=384)` — deterministic, offline, blake2b-based; L2-normalised;
+  zero-vector for empty input; no deps beyond stdlib
+- `AnthropicEmbedder` — Voyage AI HTTP endpoint via `urllib.request` (zero extra deps);
+  configurable model via `CONTEXT_ENGINE_EMBED_MODEL`; lazy import
+- `GraphStore.has_embedding(node_id) -> bool` helper (one-line SQL)
+- `ContextEngine.__init__` gains `embedder: Embedder | None`; when present passes
+  `embedder.embed` as `embed_fn` to `SeedSelector`
+- `ContextEngine.index_all()` backfills embeddings for nodes without one;
+  returns `(indexed, already_had)` counts
+- `ctx index` CLI command: backfills embeddings, prints summary;
+  `--embedder hash|anthropic` switch
+- `ctx query` now wires a `HashEmbedder` by default, enabling free-form queries
+  without `--seed`
+- Tests: determinism, dimension, L2 norm, empty input, punctuation-agnostic
+  tokenisation, different-tokens-different-vectors, `SeedSelector` returns
+  squat in top-k for "Why do I avoid squats?", end-to-end free-form engine query
+
 ## Next (beyond v0.1)
 
 1. **LLM classifier** — drop-in replacement for `KeywordClassifier`, uses

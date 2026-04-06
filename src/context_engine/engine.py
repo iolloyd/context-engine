@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from context_engine.classifier import Classifier, KeywordClassifier
 from context_engine.feedback import FeedbackApplier
@@ -26,6 +26,9 @@ from context_engine.types import (
     Query,
     QueryTuple,
 )
+
+if TYPE_CHECKING:
+    from context_engine.embedding import Embedder
 
 
 class Synthesiser(Protocol):
@@ -92,14 +95,39 @@ class ContextEngine:
         classifier: Classifier | None = None,
         synthesiser: Synthesiser | None = None,
         embed_fn: Callable[[str], list[float]] | None = None,
+        embedder: Embedder | None = None,
     ) -> None:
         self.store = store
         self.classifier = classifier or KeywordClassifier()
         self.synthesiser = synthesiser or OfflineSynthesiser()
-        self.seeds = SeedSelector(store, embed_fn=embed_fn)
+        self._embedder = embedder
+        # embedder.embed takes precedence over the raw embed_fn callable.
+        resolved_embed_fn = embedder.embed if embedder is not None else embed_fn
+        self.seeds = SeedSelector(store, embed_fn=resolved_embed_fn)
         self.traverser = Traverser(store)
         self.logic = LogicEngine()
         self.feedback = FeedbackApplier(store)
+
+    def index_all(self) -> tuple[int, int]:
+        """Backfill embeddings for every node that does not yet have one.
+
+        Returns ``(indexed, already_had)`` counts.
+        Raises ``RuntimeError`` if no embedder was configured.
+        """
+        if self._embedder is None:
+            raise RuntimeError("ContextEngine.index_all() requires an embedder")
+        indexed = 0
+        already_had = 0
+        for nid in self.store.all_node_ids():
+            if self.store.has_embedding(nid):
+                already_had += 1
+                continue
+            node = self.store.get_node(nid)
+            if node is None:
+                continue
+            self.store._set_embedding(nid, self._embedder.embed(node.content))
+            indexed += 1
+        return indexed, already_had
 
     def answer(
         self,

@@ -1,0 +1,5 @@
+edges:
+  - target: rules/deload
+    type: falls_back_to
+    weight: 0.5
+    content: When progression fails, deload.

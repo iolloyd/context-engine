@@ -245,6 +245,13 @@ class GraphStore:
 
     # ── embeddings / seed search ────────────────────────────────────────────
 
+    def has_embedding(self, node_id: str) -> bool:
+        """Return True if a stored embedding exists for *node_id*."""
+        row = self._conn.execute(
+            "SELECT 1 FROM node_embeddings WHERE node_id=?", (node_id,)
+        ).fetchone()
+        return row is not None
+
     def _set_embedding(self, node_id: str, vec: list[float]) -> None:
         if len(vec) != self.embed_dim:
             raise ValueError(f"expected dim {self.embed_dim}, got {len(vec)}")

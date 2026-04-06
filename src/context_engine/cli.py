@@ -15,6 +15,7 @@ import json
 import sys
 from pathlib import Path
 
+from context_engine.embedding import HashEmbedder
 from context_engine.engine import ContextEngine
 from context_engine.source import FolderTreeSource
 from context_engine.store import GraphStore
@@ -55,6 +56,14 @@ def main(argv: list[str] | None = None) -> int:
     p_export = sub.add_parser("export", help="write the graph back to a folder tree")
     p_export.add_argument("tree", help="path to the knowledge/ root")
 
+    p_index = sub.add_parser("index", help="backfill embeddings for all nodes")
+    p_index.add_argument(
+        "--embedder",
+        choices=["hash", "anthropic"],
+        default="hash",
+        help="embedding backend (default: hash)",
+    )
+
     args = parser.parse_args(argv)
     store = GraphStore(Path(args.db))
 
@@ -84,7 +93,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "query":
-        engine = ContextEngine(store)
+        embedder = HashEmbedder(dim=store.embed_dim)
+        engine = ContextEngine(store, embedder=embedder)
         metadata_filter = json.loads(args.filter) if args.filter else None
         query = Query(text=args.text, explicit_refs=args.seed)
         resp = engine.answer(query, metadata_filter=metadata_filter)
@@ -109,6 +119,18 @@ def main(argv: list[str] | None = None) -> int:
         source = FolderTreeSource(args.tree)
         source.export_from(store)
         print(f"exported {store.node_count()} nodes to {args.tree}")
+        return 0
+
+    if args.cmd == "index":
+        if args.embedder == "anthropic":
+            from context_engine.embedding import AnthropicEmbedder
+
+            embedder = AnthropicEmbedder()
+        else:
+            embedder = HashEmbedder(dim=store.embed_dim)
+        engine = ContextEngine(store, embedder=embedder)
+        indexed, already_had = engine.index_all()
+        print(f"indexed {indexed} nodes ({already_had} already had embeddings)")
         return 0
 
     parser.print_help()

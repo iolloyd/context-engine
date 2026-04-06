@@ -78,6 +78,33 @@ The tuple maps to a `TraversalStrategy` (edge filters, depth, weight floor, budg
 
 SQLite + `sqlite-vec` for vector similarity on seed selection. Property graph emulated via two tables. One file, no ops.
 
+## Authoring
+
+Knowledge is authored as a **folder tree** — one folder per node, a `readme.md` with YAML frontmatter for content and metadata, and an optional `edges.yaml` for outgoing typed edges. The tree is the source of truth; SQLite is a rebuildable index. Everything is git-diffable.
+
+```
+knowledge/
+├── exercises/
+│   ├── bench-press/
+│   │   ├── readme.md       ← frontmatter + body
+│   │   └── edges.yaml      ← outgoing edges with type, weight, content
+│   └── squat/
+│       ├── readme.md
+│       └── edges.yaml
+└── rules/
+    └── progression/
+        ├── readme.md       ← JSON rule body
+        └── edges.yaml      ← falls_back_to: deload
+```
+
+See [`docs/adr/0001-knowledge-source.md`](docs/adr/0001-knowledge-source.md) for the full rationale (why not Obsidian).
+
+```bash
+ctx --db graph.db import fixtures/tree       # build
+ctx --db graph.db query "Why do I avoid squats?" --seed exercises/squat
+ctx --db graph.db export fixtures/tree       # write back (feedback loop uses this)
+```
+
 ## Status
 
 Phase 0 — scaffolding. Design stable, implementation in progress.

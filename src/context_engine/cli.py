@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 from context_engine.engine import ContextEngine
+from context_engine.source import FolderTreeSource
 from context_engine.store import GraphStore
 from context_engine.types import Query
 
@@ -47,6 +48,12 @@ def main(argv: list[str] | None = None) -> int:
     p_query.add_argument("--filter", help="metadata filter as JSON")
 
     sub.add_parser("dump")
+
+    p_import = sub.add_parser("import", help="build the graph from a folder tree")
+    p_import.add_argument("tree", help="path to the knowledge/ root")
+
+    p_export = sub.add_parser("export", help="write the graph back to a folder tree")
+    p_export.add_argument("tree", help="path to the knowledge/ root")
 
     args = parser.parse_args(argv)
     store = GraphStore(Path(args.db))
@@ -86,6 +93,22 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "dump":
         print(f"nodes: {store.node_count()}  edges: {store.edge_count()}")
+        return 0
+
+    if args.cmd == "import":
+        source = FolderTreeSource(args.tree)
+        report = source.import_into(store)
+        print(
+            f"imported {report.nodes} nodes, "
+            f"{report.explicit_edges} explicit edges, "
+            f"{report.derived_edges} derived edges"
+        )
+        return 0
+
+    if args.cmd == "export":
+        source = FolderTreeSource(args.tree)
+        source.export_from(store)
+        print(f"exported {store.node_count()} nodes to {args.tree}")
         return 0
 
     parser.print_help()

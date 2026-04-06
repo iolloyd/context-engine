@@ -79,6 +79,14 @@ Phased, each phase produces a runnable system that passes its own tests.
 - Source reliability scaling: user > logic_engine > llm
 - Tests: helpful edges strengthen, learned edges get created
 
+## Phase 9 — folder-tree knowledge source ✅
+
+- ADR 0001 decides on the folder-tree format over Obsidian
+- `FolderTreeSource` imports/exports the SQLite store
+- Derived `part_of` edges synthesised from parent folders; never written back
+- Fixture tree in `fixtures/tree/` used for round-trip tests
+- `ctx import` / `ctx export` CLI commands
+
 ## Next (beyond v0.1)
 
 1. **LLM classifier** — drop-in replacement for `KeywordClassifier`, uses

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from context_engine.store import GraphStore
-from context_engine.strategy import StrategyResolver, strategy_for
-from context_engine.types import Focus, Intent, QueryTuple
+from context_engine.strategy import StrategyResolver, strategy_for, widen
+from context_engine.types import Focus, Intent, QueryTuple, TraversalStrategy
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -152,3 +154,99 @@ def test_resolve_orders_edge_types_by_score() -> None:
     strategy = resolver.resolve(t, seeds=[])
     types = strategy.edge_types
     assert types.index("if_then") < types.index("threshold")
+
+
+# ── widen levels ──────────────────────────────────────────────────────────────
+
+
+def _base_strategy() -> TraversalStrategy:
+    return TraversalStrategy(
+        budget=20,
+        depth=3,
+        weight_floor=0.3,
+        edge_types=["if_then", "threshold"],
+    )
+
+
+def test_widen_level_0_is_noop() -> None:
+    """widen(s, level=0) returns an identical strategy."""
+    s = _base_strategy()
+    result = widen(s, level=0)
+    assert result.budget == s.budget
+    assert result.depth == s.depth
+    assert result.weight_floor == s.weight_floor
+    assert result.edge_types == s.edge_types
+
+
+def test_widen_level_1_doubles_budget_relaxes_floor() -> None:
+    """widen(s, level=1) doubles budget, increments depth, decreases weight_floor."""
+    s = _base_strategy()
+    result = widen(s, level=1)
+    assert result.budget == 40
+    assert result.depth == 4
+    assert result.weight_floor == pytest.approx(0.2)
+    assert result.edge_types == s.edge_types  # preserved
+
+
+def test_widen_level_2_clears_filter_full_widen() -> None:
+    """widen(s, level=2) applies 4× budget, +2 depth, weight_floor=0.0, no filter."""
+    s = _base_strategy()
+    result = widen(s, level=2)
+    assert result.budget == 80
+    assert result.depth == 5
+    assert result.weight_floor == 0.0
+    assert result.edge_types == []
+
+
+def test_widen_level_clamps_at_2() -> None:
+    """widen(s, level=5) behaves identically to widen(s, level=2)."""
+    s = _base_strategy()
+    assert widen(s, level=5).budget == widen(s, level=2).budget
+    assert widen(s, level=5).depth == widen(s, level=2).depth
+    assert widen(s, level=5).edge_types == []
+
+
+# ── StrategyResolver.downgrade ────────────────────────────────────────────────
+
+
+def test_downgrade_bumps_stored_params() -> None:
+    """downgrade() increases budget/depth and decreases weight_floor; sets downgrade_count."""
+    store = GraphStore(":memory:")
+    resolver = StrategyResolver(store)
+    resolver.bootstrap()
+
+    t = _tuple(Intent.EVALUATE, Focus.CONDITIONAL)
+    node_before = resolver.get_strategy_node(t)
+    assert node_before is not None
+    content_before = json.loads(node_before.content)
+    budget_before = content_before["budget"]
+    depth_before = content_before["depth"]
+    floor_before = content_before["weight_floor"]
+
+    resolver.downgrade(t)
+
+    node_after = resolver.get_strategy_node(t)
+    assert node_after is not None
+    content_after = json.loads(node_after.content)
+
+    assert content_after["budget"] > budget_before
+    assert content_after["depth"] > depth_before
+    assert content_after["weight_floor"] < floor_before
+    assert node_after.metadata["downgrade_count"] == 1
+
+
+def test_downgrade_caps_budget_and_depth() -> None:
+    """Repeated downgrade() calls never exceed budget=200 or depth=10."""
+    store = GraphStore(":memory:")
+    resolver = StrategyResolver(store)
+    resolver.bootstrap()
+
+    t = _tuple(Intent.EVALUATE, Focus.CONDITIONAL)
+    for _ in range(10):
+        resolver.downgrade(t)
+
+    node = resolver.get_strategy_node(t)
+    assert node is not None
+    content = json.loads(node.content)
+    assert content["budget"] <= 200
+    assert content["depth"] <= 10

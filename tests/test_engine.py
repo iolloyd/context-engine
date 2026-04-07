@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from context_engine.engine import ContextEngine
+from context_engine.engine import ContextEngine, EngineResponse
 from context_engine.store import GraphStore
-from context_engine.types import Query
+from context_engine.types import ContextSlice, Focus, Intent, Query, QueryTuple, TraversalStrategy
 
 
 def test_engine_answers_causal_query(store: GraphStore) -> None:
@@ -23,3 +23,14 @@ def test_engine_evaluates_progression(store: GraphStore) -> None:
     assert resp.logic_results, "evaluate intent must produce logic results"
     passed = any(r.passed for r in resp.logic_results)
     assert passed
+
+
+def test_engine_response_warnings_defaults_to_empty_list() -> None:
+    slice_ = ContextSlice(nodes=[], edges=[], seeds=[], strategy=TraversalStrategy())
+    resp = EngineResponse(
+        text="",
+        tuple_=QueryTuple(intent=Intent.RETRIEVE, focus=Focus.CAUSAL),
+        slice_=slice_,
+        logic_results=[],
+    )
+    assert resp.warnings == []

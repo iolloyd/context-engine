@@ -9,7 +9,7 @@ so tests can run without network access.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
 from context_engine.classifier import Classifier, KeywordClassifier
@@ -49,6 +49,7 @@ class EngineResponse:
     logic_results: list[LogicResult]
     needed_widen: bool = False
     gap_flag: bool = False
+    warnings: list[str] = field(default_factory=list)
 
 
 class OfflineSynthesiser:

@@ -323,6 +323,17 @@ Phased, each phase produces a runnable system that passes its own tests.
     (in `test_cli.py`)
 - Full suite: 113 passed + 4 skipped
 
+## Phase 19 — cx garden graph health diagnostic ✅
+
+- New `src/context_engine/garden.py`: `GardenConfig`, `Finding`, `Gardener`
+- Six checks: orphans, duplicates (embedding + content cosine), dead weights,
+  strategy drift, uncovered tuples, recent activity
+- Added `GraphStore.get_embedding` and `GraphStore.all_edges` helpers to `store.py`
+- New `ctx garden` CLI subcommand with `--dead-weight` and `--drift-rate` flags;
+  renders a rich table of findings
+- Tests: 11 new tests in `tests/test_garden.py`, 1 new test in `tests/test_cli.py`
+- Full suite: 125 passed + 4 skipped
+
 ## Next (beyond v0.1)
 
 1. **LLM classifier** — drop-in replacement for `KeywordClassifier`, uses

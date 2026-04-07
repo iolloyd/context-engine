@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from context_engine.classifier import Classifier, KeywordClassifier
@@ -105,6 +106,7 @@ class ContextEngine:
         embedder: Embedder | None = None,
         auto_feedback: bool = False,
         downgrade_threshold: int = 3,
+        tree_root: Path | None = None,
     ) -> None:
         self.store = store
         self.classifier = classifier or KeywordClassifier()
@@ -121,7 +123,7 @@ class ContextEngine:
         self.strategies = StrategyResolver(store)
         self.traverser = Traverser(store, strategies=self.strategies)
         self.logic = LogicEngine()
-        self.feedback = FeedbackApplier(store, strategies=self.strategies)
+        self.feedback = FeedbackApplier(store, strategies=self.strategies, tree_root=tree_root)
         self.auto_feedback = auto_feedback
         self.downgrade_threshold = downgrade_threshold
         self._signature_failures: dict[tuple, int] = {}

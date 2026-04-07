@@ -7,6 +7,8 @@ import pytest
 
 from context_engine.source import (
     _SYSTEM_METADATA_KEYS,
+    SIDECAR_DIR,
+    WEIGHTS_FILE,
     FolderTreeSource,
     ParsedEdge,
     ParsedNode,
@@ -242,3 +244,133 @@ def test_source_hash_persisted_in_metadata() -> None:
         assert source_hash is not None, f"node {nid} missing source_hash"
         assert len(source_hash) == 64, f"node {nid} source_hash is not a 64-char hex string"
         assert all(c in "0123456789abcdef" for c in source_hash)
+
+
+# ── frontmatter edges ─────────────────────────────────────────────────────
+
+
+def test_frontmatter_edges_parsed(tmp_path: Path) -> None:
+    readme = tmp_path / "readme.md"
+    readme.write_text(
+        "---\n"
+        "type: exercise\n"
+        "edges:\n"
+        "  - target: x\n"
+        "    type: if_then\n"
+        "    weight: 0.7\n"
+        "---\n"
+        "Body text.\n",
+        encoding="utf-8",
+    )
+    parsed = parse_readme(readme, "node/a")
+    assert len(parsed.frontmatter_edges) == 1
+    edge = parsed.frontmatter_edges[0]
+    assert edge.target == "x"
+    assert edge.edge_type == "if_then"
+    assert edge.weight == 0.7
+    # edges key must NOT appear in metadata
+    assert "edges" not in parsed.metadata
+
+
+def test_frontmatter_edges_imported(tmp_path: Path) -> None:
+    # Node A declares an edge to node B via frontmatter only (no edges.yaml).
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "readme.md").write_text(
+        "---\n"
+        "type: x\n"
+        "edges:\n"
+        "  - target: b\n"
+        "    type: if_then\n"
+        "    weight: 0.6\n"
+        "---\n"
+        "Node A.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "b").mkdir()
+    (tmp_path / "b" / "readme.md").write_text("---\ntype: y\n---\nNode B.\n", encoding="utf-8")
+
+    store = GraphStore(":memory:")
+    FolderTreeSource(tmp_path).import_into(store)
+
+    edges = store.out_edges("a", edge_types=["if_then"])
+    assert len(edges) == 1
+    assert edges[0].target == "b"
+    assert abs(edges[0].weight - 0.6) < 1e-6
+
+
+def test_frontmatter_and_external_edges_merge(tmp_path: Path) -> None:
+    # Node A has BOTH an edges.yaml AND a frontmatter edge to the same target.
+    # Frontmatter weight (0.8) should win over external (0.3).
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "readme.md").write_text(
+        "---\n"
+        "type: x\n"
+        "edges:\n"
+        "  - target: b\n"
+        "    type: if_then\n"
+        "    weight: 0.8\n"
+        "---\n"
+        "Node A.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "a" / "edges.yaml").write_text(
+        "edges:\n  - target: b\n    type: if_then\n    weight: 0.3\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "b").mkdir()
+    (tmp_path / "b" / "readme.md").write_text("---\ntype: y\n---\nNode B.\n", encoding="utf-8")
+
+    store = GraphStore(":memory:")
+    FolderTreeSource(tmp_path).import_into(store)
+
+    edges = store.out_edges("a", edge_types=["if_then"])
+    assert len(edges) == 1
+    assert abs(edges[0].weight - 0.8) < 1e-6
+
+
+def test_weights_sidecar_overrides_authored(tmp_path: Path) -> None:
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "readme.md").write_text(
+        "---\ntype: x\n---\nNode A.\n", encoding="utf-8"
+    )
+    (tmp_path / "a" / "edges.yaml").write_text(
+        "edges:\n  - target: b\n    type: if_then\n    weight: 0.5\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "b").mkdir()
+    (tmp_path / "b" / "readme.md").write_text("---\ntype: y\n---\nNode B.\n", encoding="utf-8")
+
+    # Write a sidecar that overrides the authored weight.
+    sidecar_dir = tmp_path / SIDECAR_DIR
+    sidecar_dir.mkdir()
+    (sidecar_dir / WEIGHTS_FILE).write_text(
+        "edges:\n  \"a -> b:if_then\":\n    weight: 0.9\n",
+        encoding="utf-8",
+    )
+
+    store = GraphStore(":memory:")
+    FolderTreeSource(tmp_path).import_into(store)
+
+    edges = store.out_edges("a", edge_types=["if_then"])
+    assert len(edges) == 1
+    assert abs(edges[0].weight - 0.9) < 1e-6
+
+
+def test_weights_sidecar_missing_is_noop(tmp_path: Path) -> None:
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "readme.md").write_text(
+        "---\ntype: x\n---\nNode A.\n", encoding="utf-8"
+    )
+    (tmp_path / "a" / "edges.yaml").write_text(
+        "edges:\n  - target: b\n    type: if_then\n    weight: 0.5\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "b").mkdir()
+    (tmp_path / "b" / "readme.md").write_text("---\ntype: y\n---\nNode B.\n", encoding="utf-8")
+
+    store = GraphStore(":memory:")
+    FolderTreeSource(tmp_path).import_into(store)
+
+    edges = store.out_edges("a", edge_types=["if_then"])
+    assert len(edges) == 1
+    assert abs(edges[0].weight - 0.5) < 1e-6

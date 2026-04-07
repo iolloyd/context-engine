@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from context_engine.feedback import FeedbackApplier
+from pathlib import Path
+
+import yaml
+
+from context_engine.feedback import _SIDECAR_DIR, _WEIGHTS_FILE, FeedbackApplier
 from context_engine.store import GraphStore
 from context_engine.strategy import StrategyResolver
 from context_engine.types import FeedbackSignal, Focus, Intent, QueryTuple
@@ -59,3 +63,51 @@ def test_missing_nodes_create_learned_edges(store: GraphStore) -> None:
         (e := store.get_edge(eid)) is not None and e.type == "learned"
         for eid in updates
     )
+
+
+# ── sidecar persistence ────────────────────────────────────────────────────
+
+
+def test_feedback_writes_sidecar(store: GraphStore, tmp_path: Path) -> None:
+    applier = FeedbackApplier(store, alpha=0.2, tree_root=tmp_path)
+    edge = store.out_edges("squat", edge_types=["because_of"])[0]
+    signal = FeedbackSignal(
+        query_text="why avoid squat",
+        used_node_ids=["squat"],
+        helpful_edge_ids=[edge.id],
+        source="user",
+        delta=1.0,
+    )
+    applier.apply(signal)
+
+    sidecar_path = tmp_path / _SIDECAR_DIR / _WEIGHTS_FILE
+    assert sidecar_path.exists()
+    raw = yaml.safe_load(sidecar_path.read_text(encoding="utf-8"))
+    assert isinstance(raw, dict)
+    assert "edges" in raw
+    # Find the entry for squat -> knee:because_of
+    key = "squat -> knee:because_of"
+    assert key in raw["edges"]
+    assert raw["edges"][key]["weight"] > edge.weight
+
+
+def test_feedback_does_not_touch_authored_files(store: GraphStore, tmp_path: Path) -> None:
+    # Create a fake readme under tree_root/knowledge/squat/readme.md.
+    node_dir = tmp_path / "knowledge" / "squat"
+    node_dir.mkdir(parents=True)
+    readme_path = node_dir / "readme.md"
+    original_bytes = b"---\ntype: exercise\n---\nSquat node.\n"
+    readme_path.write_bytes(original_bytes)
+
+    applier = FeedbackApplier(store, tree_root=tmp_path)
+    edge = store.out_edges("squat", edge_types=["because_of"])[0]
+    signal = FeedbackSignal(
+        query_text="squat feedback",
+        used_node_ids=["squat"],
+        helpful_edge_ids=[edge.id],
+        source="user",
+        delta=1.0,
+    )
+    applier.apply(signal)
+
+    assert readme_path.read_bytes() == original_bytes

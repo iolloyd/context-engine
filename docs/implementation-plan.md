@@ -246,6 +246,41 @@ Phased, each phase produces a runnable system that passes its own tests.
   second `index_all()` returns `(0, N)` when all nodes are fresh;
   full suite 98 passed + 3 skipped
 
+## Phase 17 — unified frontmatter edges + weights sidecar ✅
+
+- `ParsedNode` gains `frontmatter_edges: list[ParsedEdge]` (default empty list)
+- `parse_readme` pops the optional `edges:` key from the YAML frontmatter,
+  parses it via the shared `_parse_edge_items` helper, and stores the result
+  in `ParsedNode.frontmatter_edges`; the `metadata` dict never contains `edges`
+- `parse_edges` refactored to delegate inner-loop parsing to `_parse_edge_items`
+  (same validation, same error messages)
+- `_load_weights_sidecar(root)` loads `<root>/.ctx/weights.yaml` if present;
+  key format on disk is `"<source> -> <target>:<type>"`; returns a
+  `dict[(source, edge_type, target), weight]`; missing or empty file returns `{}`
+- `_merge_edges(frontmatter_edges, external_edges)` deduplicates by
+  `(source, target, edge_type)`; frontmatter entry wins on collision
+- `FolderTreeSource.import_into` restructured into two passes: (1) node upserts
+  (hash-skipped when unchanged), (2) per-node edge merge + sidecar override +
+  edge upsert; pass 2 always runs so sidecar changes take effect without
+  touching authored files; the source hash intentionally excludes the sidecar
+- `FeedbackApplier.__init__` gains optional `tree_root: Path | None`; when set,
+  weight updates are persisted to `<tree_root>/.ctx/weights.yaml` in addition to
+  SQLite; `_write_sidecar_entry` creates the directory if missing and preserves
+  all existing entries via load-modify-write
+- `ContextEngine.__init__` gains optional `tree_root: Path | None = None`,
+  forwarded to `FeedbackApplier`; the `query` CLI handler auto-detects a
+  `knowledge/` sibling of the db file and passes it as `tree_root`
+- `ctx migrate` subcommand: walks all `edges.yaml` files in a tree, merges
+  their edges into the corresponding `readme.md` frontmatter (frontmatter wins
+  on duplicates), prints a diff summary; without `--yes` it is a dry-run;
+  with `--yes` it writes the updated readmes and deletes the edges.yaml files
+- README updated: documents `knowledge/.ctx/` gitignore entry alongside
+  `.ctx.db`; documents `ctx migrate` command
+- Tests: 5 new source tests (frontmatter parsed, imported, merge-wins,
+  sidecar override, sidecar missing noop); 2 new feedback tests (sidecar
+  written, authored files untouched); 2 new CLI tests (dry-run, --yes);
+  full suite 107 passed + 3 skipped
+
 ## Next (beyond v0.1)
 
 1. **LLM classifier** — drop-in replacement for `KeywordClassifier`, uses

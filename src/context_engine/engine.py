@@ -50,6 +50,9 @@ class EngineResponse:
     needed_widen: bool = False
     gap_flag: bool = False
     warnings: list[str] = field(default_factory=list)
+    used_node_ids: list[str] = field(default_factory=list)
+    missing: list[str] = field(default_factory=list)
+    confidence: float = 1.0
 
 
 class OfflineSynthesiser:
@@ -86,6 +89,9 @@ class OfflineSynthesiser:
             tuple_=tuple_,
             slice_=slice_,
             logic_results=logic_results,
+            used_node_ids=[n.id for n in slice_.nodes],  # offline: assume all used
+            missing=[],
+            confidence=1.0,
         )
 
 
@@ -97,6 +103,7 @@ class ContextEngine:
         synthesiser: Synthesiser | None = None,
         embed_fn: Callable[[str], list[float]] | None = None,
         embedder: Embedder | None = None,
+        auto_feedback: bool = False,
     ) -> None:
         self.store = store
         self.classifier = classifier or KeywordClassifier()
@@ -108,6 +115,7 @@ class ContextEngine:
         self.traverser = Traverser(store)
         self.logic = LogicEngine()
         self.feedback = FeedbackApplier(store)
+        self.auto_feedback = auto_feedback
 
     def index_all(self) -> tuple[int, int]:
         """Backfill embeddings for every node that does not yet have one.
@@ -144,18 +152,53 @@ class ContextEngine:
         if tuple_.intent in (Intent.EVALUATE, Intent.ACT):
             logic_results = self.logic.evaluate(slice_)
 
-        # Gap detection: any logic result that flagged missing facts widens
-        # the traversal and retries once.
-        needed_widen = False
+        # Gap detection pass 1: any logic result that flagged missing facts
+        # widens the traversal and retries once.
+        needed_widen_logic = False
         if any(r.missing for r in logic_results):
-            needed_widen = True
-            wider = widen(strategy)
-            slice_ = self.traverser.traverse(wider, tuple_)
+            needed_widen_logic = True
+            wider_logic = widen(strategy)
+            slice_ = self.traverser.traverse(wider_logic, tuple_)
             logic_results = self.logic.evaluate(slice_)
 
         response = self.synthesiser.synthesise(query, tuple_, slice_, logic_results)
+
+        # Gap detection pass 2: synthesiser signals missing knowledge.
+        # Widen once more and re-synthesise if we haven't already widened twice.
+        needed_widen = needed_widen_logic
+        widen_count = 1 if needed_widen_logic else 0
+        if response.missing and widen_count < 2:
+            needed_widen = True
+            wider_synth = widen(strategy)
+            slice_ = self.traverser.traverse(wider_synth, tuple_)
+            if tuple_.intent in (Intent.EVALUATE, Intent.ACT):
+                logic_results = self.logic.evaluate(slice_)
+            response = self.synthesiser.synthesise(query, tuple_, slice_, logic_results)
+
         response.needed_widen = needed_widen
-        response.gap_flag = needed_widen
+        response.gap_flag = bool(response.missing) or needed_widen
+
+        if self.auto_feedback:
+            slice_node_ids = {n.id for n in response.slice_.nodes}
+            used_set = set(response.used_node_ids)
+            helpful_edge_ids = [
+                e.id for e in response.slice_.edges if e.target in used_set
+            ]
+            noisy_edge_ids = [
+                e.id
+                for e in response.slice_.edges
+                if e.target in slice_node_ids and e.target not in used_set
+            ]
+            signal = FeedbackSignal(
+                query_text=query.text,
+                used_node_ids=response.used_node_ids,
+                helpful_edge_ids=helpful_edge_ids,
+                noisy_edge_ids=noisy_edge_ids,
+                source="llm",
+                delta=0.5,
+            )
+            self.feedback.apply(signal)
+
         return response
 
     def record_feedback(self, signal: FeedbackSignal) -> dict[str, float]:

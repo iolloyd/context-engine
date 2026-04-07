@@ -281,6 +281,48 @@ Phased, each phase produces a runnable system that passes its own tests.
   written, authored files untouched); 2 new CLI tests (dry-run, --yes);
   full suite 107 passed + 3 skipped
 
+## Phase 18 — LLM-assisted edge suggestion ✅
+
+- `EdgeSuggestion` dataclass: `target`, `type`, `weight`, `rationale`
+- `EdgeSuggester` class in `src/context_engine/edge_suggester.py`:
+  - Lazy Anthropic SDK import; `is_available()` returns `False` when SDK absent or
+    no API key; all failures return `[]` (never raise)
+  - `suggest(target_node, candidate_nodes, target_embedding, existing_edge_types)`:
+    - When `target_embedding` is provided, candidates assumed pre-sorted by knn
+      similarity (caller uses `store.knn`); otherwise sorted by `updated_at`
+      descending; truncated to `max_candidates`
+    - Forced tool-call (`suggest_edges` tool schema) with structured output:
+      `target_id`, `edge_type`, `weight`, `rationale` per suggestion
+    - Suggestions referencing unknown `target_id` values are silently dropped
+    - Any exception prints a warning to stderr and returns `[]`
+- `append_frontmatter_edges(tree_root, node_id, edges)` added to `source.py`:
+  parses the target node's `readme.md`, deduplicates edges by
+  `(source, target, edge_type)` (existing entries win), serialises back to disk
+  preserving all existing frontmatter keys and the full body
+- `ctx suggest-edges <node_id>` CLI subcommand:
+  - Loads target node from store; error if missing
+  - Candidate nodes: all nodes excluding target and `type=strategy` nodes
+  - If target has a stored embedding, uses `store.knn` to pre-rank candidates
+    by vector similarity; otherwise all nodes passed to suggester
+  - Non-interactive (default): prints a `rich` table of suggestions
+  - `--interactive`: prompts `[y/n/skip]` for each suggestion; accepted ones
+    written back to the node's frontmatter via `append_frontmatter_edges`;
+    requires `--tree` to know where the knowledge root is
+  - `--max-candidates N` (default 50): cap on how many candidates are considered
+- Shell extension (`cxn suggest-edges`): out of scope for this issue — users may
+  add a shell wrapper alias; see the `ctx suggest-edges` documentation in README
+- Tests (6 new):
+  - `test_happy_path_returns_two_suggestions`: mocked client, two valid suggestions
+  - `test_invalid_target_id_filtered_out`: three raw suggestions, one invalid — two survive
+  - `test_network_failure_returns_empty_and_warns`: RuntimeError → `[]` + stderr warning
+  - `test_no_sdk_is_available_returns_false_and_suggest_returns_empty`: patched SDK absence
+  - `test_integration_smoke`: live API, skipped without `ANTHROPIC_API_KEY`
+  - `test_append_frontmatter_edges_preserves_body`: body byte-identical, frontmatter keys
+    preserved, new edge present (in `test_source.py`)
+  - `test_suggest_edges_non_interactive_mocked`: patched suggester, output table checked
+    (in `test_cli.py`)
+- Full suite: 113 passed + 4 skipped
+
 ## Next (beyond v0.1)
 
 1. **LLM classifier** — drop-in replacement for `KeywordClassifier`, uses

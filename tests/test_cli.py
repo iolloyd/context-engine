@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 from context_engine.cli import main
+from context_engine.edge_suggester import EdgeSuggestion
 
 
 def _make_two_node_tree(root: Path) -> None:
@@ -64,3 +66,31 @@ def test_migrate_inline_edges_with_yes(tmp_path: Path) -> None:
     edges = store.out_edges("a", edge_types=["if_then"])
     assert len(edges) == 1
     assert edges[0].target == "b"
+
+
+def test_suggest_edges_non_interactive_mocked(tmp_path: Path, capsys) -> None:
+    """suggest-edges with patched EdgeSuggester.suggest prints a table with the suggestion."""
+    from context_engine.store import GraphStore
+
+    db_path = tmp_path / "graph.db"
+    store = GraphStore(str(db_path))
+    store.upsert_node(content="Node A content.", metadata={"type": "exercise"}, node_id="a")
+    store.upsert_node(content="Node B content.", metadata={"type": "exercise"}, node_id="b")
+
+    canned = [
+        EdgeSuggestion(
+            target="b",
+            type="supports",
+            weight=0.8,
+            rationale="A supports B because of shared context.",
+        )
+    ]
+
+    with patch("context_engine.edge_suggester.EdgeSuggester.suggest", return_value=canned), \
+         patch("context_engine.edge_suggester.EdgeSuggester.is_available", return_value=True):
+        rc = main(["--db", str(db_path), "suggest-edges", "a"])
+
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "b" in captured.out
+    assert "supports" in captured.out

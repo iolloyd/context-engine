@@ -397,3 +397,67 @@ class ImportReport:
     nodes_created: int = field(default=0)
     nodes_updated: int = field(default=0)
     nodes_skipped_unchanged: int = field(default=0)
+
+
+def append_frontmatter_edges(tree_root: Path, node_id: str, edges: list[ParsedEdge]) -> None:
+    """Append *edges* to the frontmatter ``edges:`` list of the node's ``readme.md``.
+
+    Reads the file, merges the new edges with any existing frontmatter edges
+    (new edges are appended; existing entries with the same
+    ``(source, target, edge_type)`` key are not duplicated), and writes the
+    file back.  All other frontmatter keys and the body are preserved verbatim.
+
+    Parameters
+    ----------
+    tree_root:
+        Root directory of the knowledge tree (i.e. the folder passed to
+        ``FolderTreeSource``).
+    node_id:
+        POSIX-relative node identifier (e.g. ``"exercises/squat"``).
+    edges:
+        Edges to append.  ``edge.source`` is ignored; the node is always the
+        source because we are editing its own ``readme.md``.
+    """
+    if not edges:
+        return
+
+    readme_path = Path(tree_root) / node_id / README
+    existing = parse_readme(readme_path, node_id)
+
+    # Deduplicate: existing frontmatter edges win; new edges are added only if
+    # the (source, target, edge_type) triple is not already present.
+    seen: dict[tuple[str, str, str], ParsedEdge] = {
+        (e.source, e.target, e.edge_type): e for e in existing.frontmatter_edges
+    }
+    for edge in edges:
+        key = (node_id, edge.target, edge.edge_type)
+        if key not in seen:
+            seen[key] = ParsedEdge(
+                source=node_id,
+                target=edge.target,
+                edge_type=edge.edge_type,
+                weight=edge.weight,
+                content=edge.content,
+            )
+
+    all_edges = list(seen.values())
+    edge_dicts = [
+        {
+            k: v
+            for k, v in {
+                "target": e.target,
+                "type": e.edge_type,
+                "weight": round(e.weight, 4),
+                "content": e.content,
+            }.items()
+            if v is not None
+        }
+        for e in all_edges
+    ]
+
+    updated = ParsedNode(
+        node_id=existing.node_id,
+        content=existing.content,
+        metadata={**existing.metadata, "edges": edge_dicts},
+    )
+    readme_path.write_text(serialise_readme(updated), encoding="utf-8")

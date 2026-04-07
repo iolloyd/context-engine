@@ -13,6 +13,7 @@ from context_engine.source import (
     ParsedEdge,
     ParsedNode,
     SourceError,
+    append_frontmatter_edges,
     parse_edges,
     parse_readme,
     serialise_edges,
@@ -354,6 +355,52 @@ def test_weights_sidecar_overrides_authored(tmp_path: Path) -> None:
     edges = store.out_edges("a", edge_types=["if_then"])
     assert len(edges) == 1
     assert abs(edges[0].weight - 0.9) < 1e-6
+
+
+def test_append_frontmatter_edges_preserves_body(tmp_path: Path) -> None:
+    """append_frontmatter_edges writes new edge, preserves body and existing frontmatter."""
+    node_dir = tmp_path / "exercises" / "squat"
+    node_dir.mkdir(parents=True)
+    readme = node_dir / "readme.md"
+    readme.write_text(
+        "---\n"
+        "status: avoided\n"
+        "type: exercise\n"
+        "---\n"
+        "First paragraph.\n"
+        "\n"
+        "Second paragraph with more details.\n",
+        encoding="utf-8",
+    )
+    original_body = "First paragraph.\n\nSecond paragraph with more details."
+
+    new_edge = ParsedEdge(
+        source="exercises/squat",
+        target="conditions/knee-pain",
+        edge_type="because_of",
+        weight=0.9,
+        content=None,
+    )
+
+    append_frontmatter_edges(tmp_path, "exercises/squat", [new_edge])
+
+    result_text = readme.read_text(encoding="utf-8")
+    parsed = parse_readme(readme, "exercises/squat")
+
+    # Body is preserved.
+    assert parsed.content == original_body
+    # Original frontmatter keys are preserved.
+    assert parsed.metadata.get("status") == "avoided"
+    assert parsed.metadata.get("type") == "exercise"
+    # The new edge is present.
+    assert len(parsed.frontmatter_edges) == 1
+    edge = parsed.frontmatter_edges[0]
+    assert edge.target == "conditions/knee-pain"
+    assert edge.edge_type == "because_of"
+    assert abs(edge.weight - 0.9) < 1e-6
+    # edges key is not exposed in metadata.
+    assert "edges" not in parsed.metadata
+    _ = result_text  # file was written
 
 
 def test_weights_sidecar_missing_is_noop(tmp_path: Path) -> None:

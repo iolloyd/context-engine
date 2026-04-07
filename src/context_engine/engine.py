@@ -17,7 +17,7 @@ from context_engine.feedback import FeedbackApplier
 from context_engine.logic import LogicEngine, LogicResult
 from context_engine.seeds import SeedSelector
 from context_engine.store import GraphStore
-from context_engine.strategy import strategy_for, widen
+from context_engine.strategy import StrategyResolver, widen
 from context_engine.traversal import Traverser
 from context_engine.types import (
     ContextSlice,
@@ -112,9 +112,10 @@ class ContextEngine:
         # embedder.embed takes precedence over the raw embed_fn callable.
         resolved_embed_fn = embedder.embed if embedder is not None else embed_fn
         self.seeds = SeedSelector(store, embed_fn=resolved_embed_fn)
-        self.traverser = Traverser(store)
+        self.strategies = StrategyResolver(store)
+        self.traverser = Traverser(store, strategies=self.strategies)
         self.logic = LogicEngine()
-        self.feedback = FeedbackApplier(store)
+        self.feedback = FeedbackApplier(store, strategies=self.strategies)
         self.auto_feedback = auto_feedback
 
     def index_all(self) -> tuple[int, int]:
@@ -145,7 +146,7 @@ class ContextEngine:
     ) -> EngineResponse:
         tuple_ = self.classifier.classify(query)
         seeds = self.seeds.select(query, metadata_filter=metadata_filter)
-        strategy = strategy_for(tuple_, seeds=seeds)
+        strategy = self.strategies.resolve(tuple_, seeds=seeds)
         slice_ = self.traverser.traverse(strategy, tuple_)
 
         logic_results: list[LogicResult] = []
@@ -196,6 +197,7 @@ class ContextEngine:
                 noisy_edge_ids=noisy_edge_ids,
                 source="llm",
                 delta=0.5,
+                query_tuple=tuple_,
             )
             self.feedback.apply(signal)
 

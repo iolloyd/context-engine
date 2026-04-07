@@ -157,3 +157,4 @@ class FeedbackSignal(BaseModel):
     noisy_edge_ids: list[str] = Field(default_factory=list)
     source: str = "llm"  # "llm", "user", "logic_engine"
     delta: float = 0.1
+    query_tuple: QueryTuple | None = None

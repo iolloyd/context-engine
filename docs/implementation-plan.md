@@ -125,6 +125,32 @@ Phased, each phase produces a runnable system that passes its own tests.
 - Tests: fact serialisation, mocked pass/missing, real swipl threshold rule,
   helper predicate via `%---`, end-to-end `ContextEngine` swap
 
+## Phase 12 — learned tuple → strategy mapping ✅
+
+- `StrategyResolver` in `strategy.py` wraps the graph store and provides:
+  - `bootstrap()`: seeds one strategy node per (intent, focus) pair using the
+    hardcoded `strategy_for()` defaults; idempotent; returns created count
+  - `resolve(tuple_, seeds, budget_override)`: lazy bootstrap on first call,
+    looks up `strategy/<intent>/<focus>` node, sorts edge types by learned
+    score, falls back to hardcoded table when node absent
+  - `record_success/failure(tuple_, helpful, noisy)`: increments counters in
+    node metadata; adjusts per-type scores (+0.05/-0.02 on success, -0.02/-0.05
+    on failure); clamps to [0, 1]; adds newly learned edge types at weight 0.35
+- Node layout: traversal params in `Node.content` (JSON); counters in
+  `Node.metadata` (queryable via `filter_nodes` without content parsing)
+- `FeedbackSignal` gains optional `query_tuple` field so callers can propagate
+  tuple context through to strategy mutation without breaking existing call sites
+- `FeedbackApplier` gains optional `strategies: StrategyResolver` parameter;
+  calls `record_success/failure` when a signal carries `query_tuple`
+- `Traverser` gains optional `strategies` parameter; uses resolver for premise-
+  check tuple overrides when present, falls back to `strategy_for` otherwise
+- `ContextEngine` wires `StrategyResolver` through all components and calls
+  `self.strategies.resolve()` instead of `strategy_for()` in `answer()`
+- Legacy `strategy_for()` function kept intact; all existing call sites and tests
+  continue to work without a store argument
+- Tests: 10 new tests (8 in `test_strategy.py`, 1 in `test_feedback.py`,
+  1 in `test_engine.py`); full suite 69 passed + 3 skipped
+
 ## Next (beyond v0.1)
 
 1. **LLM classifier** — drop-in replacement for `KeywordClassifier`, uses

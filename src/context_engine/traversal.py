@@ -25,7 +25,7 @@ import heapq
 from dataclasses import dataclass, field
 
 from context_engine.store import GraphStore
-from context_engine.strategy import STRUCTURAL_EDGE_TYPES, strategy_for
+from context_engine.strategy import STRUCTURAL_EDGE_TYPES, StrategyResolver, strategy_for
 from context_engine.types import (
     ContextSlice,
     Edge,
@@ -46,8 +46,9 @@ class _PQItem:
 
 
 class Traverser:
-    def __init__(self, store: GraphStore) -> None:
+    def __init__(self, store: GraphStore, strategies: StrategyResolver | None = None) -> None:
         self.store = store
+        self.strategies = strategies
 
     # ── public entry ────────────────────────────────────────────────────────
 
@@ -62,9 +63,14 @@ class Traverser:
         if new_tuple != tuple_:
             # Rebuild the strategy with the overridden tuple so edge filters
             # match the new intent/focus. Preserve the original budget.
-            strategy = strategy_for(
-                new_tuple, seeds=strategy.seeds, budget_override=strategy.budget
-            )
+            if self.strategies is not None:
+                strategy = self.strategies.resolve(
+                    new_tuple, seeds=strategy.seeds, budget_override=strategy.budget
+                )
+            else:
+                strategy = strategy_for(
+                    new_tuple, seeds=strategy.seeds, budget_override=strategy.budget
+                )
             tuple_ = new_tuple
 
         if tuple_.intent == Intent.SCAN:

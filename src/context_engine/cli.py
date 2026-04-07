@@ -118,7 +118,9 @@ def main(argv: list[str] | None = None) -> int:
         source = FolderTreeSource(args.tree)
         report = source.import_into(store)
         print(
-            f"imported {report.nodes} nodes, "
+            f"imported: {report.nodes_created} created, "
+            f"{report.nodes_updated} updated, "
+            f"{report.nodes_skipped_unchanged} unchanged, "
             f"{report.explicit_edges} explicit edges, "
             f"{report.derived_edges} derived edges"
         )
@@ -141,10 +143,12 @@ def main(argv: list[str] | None = None) -> int:
             embedder = default_embedder()
         else:
             embedder = HashEmbedder(dim=store.embed_dim)
-        print(f"using {type(embedder).__name__}")
         engine = ContextEngine(store, embedder=embedder)
-        indexed, already_had = engine.index_all()
-        print(f"indexed {indexed} nodes ({already_had} already had embeddings)")
+        indexed, already_fresh = engine.index_all()
+        print(
+            f"indexed {indexed} nodes ({already_fresh} already fresh)"
+            f" using {type(embedder).__name__}"
+        )
         return 0
 
     parser.print_help()

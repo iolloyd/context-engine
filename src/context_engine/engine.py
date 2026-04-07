@@ -133,25 +133,35 @@ class ContextEngine:
         }
 
     def index_all(self) -> tuple[int, int]:
-        """Backfill embeddings for every node that does not yet have one.
+        """Backfill embeddings for every node that does not yet have one
+        or whose source hash has changed.
 
-        Returns ``(indexed, already_had)`` counts.
+        Returns ``(indexed, already_fresh)``.
         Raises ``RuntimeError`` if no embedder was configured.
         """
         if self._embedder is None:
             raise RuntimeError("ContextEngine.index_all() requires an embedder")
         indexed = 0
-        already_had = 0
+        already_fresh = 0
         for nid in self.store.all_node_ids():
-            if self.store.has_embedding(nid):
-                already_had += 1
-                continue
             node = self.store.get_node(nid)
             if node is None:
                 continue
+            source_hash = node.metadata.get("source_hash")
+            indexed_hash = node.metadata.get("indexed_hash")
+            if self.store.has_embedding(nid) and indexed_hash == source_hash:
+                already_fresh += 1
+                continue
             self.store._set_embedding(nid, self._embedder.embed(node.content))
+            if source_hash is not None:
+                node.metadata["indexed_hash"] = source_hash
+                self.store.upsert_node(
+                    content=node.content,
+                    metadata=node.metadata,
+                    node_id=nid,
+                )
             indexed += 1
-        return indexed, already_had
+        return indexed, already_fresh
 
     def _signature(self, seeds: list[str], tuple_: QueryTuple) -> tuple:
         """Return a hashable identifier for the (seeds, tuple) pair."""

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date, datetime
+
 from context_engine.store import GraphStore
 
 
@@ -32,3 +34,21 @@ def test_out_edges_filter(store: GraphStore) -> None:
     edges = store.out_edges("ohp", edge_types=["has_observation"])
     assert len(edges) == 5
     assert all(e.type == "has_observation" for e in edges)
+
+
+def test_upsert_node_coerces_date_metadata() -> None:
+    """YAML frontmatter parses dates as datetime.date; they must round-trip
+    as ISO strings rather than explode the JSON encoder."""
+    s = GraphStore(":memory:")
+    n = s.upsert_node(
+        "hello",
+        metadata={
+            "type": "decision",
+            "decided_on": date(2026, 2, 14),
+            "noticed_at": datetime(2026, 2, 14, 10, 30),
+        },
+    )
+    fetched = s.get_node(n.id)
+    assert fetched is not None
+    assert fetched.metadata["decided_on"] == "2026-02-14"
+    assert fetched.metadata["noticed_at"].startswith("2026-02-14T10:30")

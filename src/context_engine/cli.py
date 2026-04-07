@@ -17,9 +17,83 @@ from pathlib import Path
 
 from context_engine.embedding import HashEmbedder
 from context_engine.engine import ContextEngine
-from context_engine.source import FolderTreeSource
+from context_engine.source import (
+    EDGES_FILE,
+    README,
+    FolderTreeSource,
+    ParsedNode,
+    _merge_edges,
+    parse_edges,
+    parse_readme,
+    serialise_readme,
+)
 from context_engine.store import GraphStore
 from context_engine.types import Query
+
+
+def _cmd_migrate(args: argparse.Namespace) -> int:
+    """Inline edges.yaml content into readme frontmatter (migration helper)."""
+    if not args.inline_edges:
+        print("nothing to do — pass --inline-edges to migrate edge files")
+        return 0
+
+    tree = Path(args.tree).resolve()
+    edges_files = sorted(tree.rglob(EDGES_FILE))
+    if not edges_files:
+        print("no edges.yaml files found — nothing to migrate")
+        return 0
+
+    changes: list[tuple[Path, Path]] = []  # (readme_path, edges_path)
+    for ef in edges_files:
+        readme_path = ef.parent / README
+        if not readme_path.exists():
+            print(f"  skip {ef} (no readme.md sibling)")
+            continue
+        node_id = ef.parent.resolve().relative_to(tree).as_posix()
+        ext_edges = parse_edges(ef, node_id)
+        if not ext_edges:
+            print(f"  skip {ef} (empty)")
+            continue
+
+        node = parse_readme(readme_path, node_id)
+        merged = _merge_edges(node.frontmatter_edges, ext_edges)
+
+        # Build the edge dicts for the frontmatter.
+        edge_dicts = [
+            {
+                k: v
+                for k, v in {
+                    "target": e.target,
+                    "type": e.edge_type,
+                    "weight": round(e.weight, 4),
+                    "content": e.content,
+                }.items()
+                if v is not None
+            }
+            for e in merged
+        ]
+        meta_with_edges = {**node.metadata, "edges": edge_dicts}
+        updated = ParsedNode(
+            node_id=node.node_id,
+            content=node.content,
+            metadata=meta_with_edges,
+        )
+        new_text = serialise_readme(updated)
+        old_text = readme_path.read_text(encoding="utf-8")
+        print(f"  {readme_path.relative_to(tree)}: +{len(merged)} edge(s) inlined")
+        if old_text != new_text:
+            changes.append((readme_path, ef))
+            if args.yes:
+                readme_path.write_text(new_text, encoding="utf-8")
+
+        if args.yes:
+            ef.unlink()
+
+    if not args.yes:
+        print(f"\ndry-run: {len(changes)} readme(s) would be updated; pass --yes to apply")
+    else:
+        print(f"\nmigrated {len(changes)} file(s); edges.yaml files deleted")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -57,6 +131,19 @@ def main(argv: list[str] | None = None) -> int:
 
     p_export = sub.add_parser("export", help="write the graph back to a folder tree")
     p_export.add_argument("tree", help="path to the knowledge/ root")
+
+    p_migrate = sub.add_parser("migrate", help="migrate source format in-place")
+    p_migrate.add_argument("tree", help="path to knowledge/ root")
+    p_migrate.add_argument(
+        "--inline-edges",
+        action="store_true",
+        help="move edges.yaml content into readme frontmatter",
+    )
+    p_migrate.add_argument(
+        "--yes",
+        action="store_true",
+        help="commit changes (without this flag it's a dry-run)",
+    )
 
     p_index = sub.add_parser("index", help="backfill embeddings for all nodes")
     p_index.add_argument(
@@ -96,7 +183,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "query":
         embedder = HashEmbedder(dim=store.embed_dim)
-        engine = ContextEngine(store, embedder=embedder)
+        # Derive tree_root from the db path: look for a knowledge/ sibling directory.
+        db_path = Path(args.db).resolve()
+        candidate = db_path.parent / "knowledge"
+        tree_root = candidate if candidate.is_dir() else None
+        engine = ContextEngine(store, embedder=embedder, tree_root=tree_root)
         metadata_filter = json.loads(args.filter) if args.filter else None
         query = Query(text=args.text, explicit_refs=args.seed)
         resp = engine.answer(query, metadata_filter=metadata_filter)
@@ -131,6 +222,9 @@ def main(argv: list[str] | None = None) -> int:
         source.export_from(store)
         print(f"exported {store.node_count()} nodes to {args.tree}")
         return 0
+
+    if args.cmd == "migrate":
+        return _cmd_migrate(args)
 
     if args.cmd == "index":
         if args.embedder == "anthropic":

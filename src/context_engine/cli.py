@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -226,9 +227,57 @@ def _cmd_suggest_edges(args: argparse.Namespace, store: GraphStore) -> int:
     return 0
 
 
+def _global_db_path() -> Path:
+    return Path(os.environ.get("CTX_GLOBAL_DB", Path.home() / ".ctx" / "global.db"))
+
+
+def _build_engine_with_global_fallback(
+    store: GraphStore, embedder: HashEmbedder | None = None
+) -> ContextEngine:
+    global_path = _global_db_path()
+    global_store = GraphStore(global_path) if global_path.exists() else None
+    if embedder is None:
+        embedder = HashEmbedder(dim=store.embed_dim)
+    return ContextEngine(store, embedder=embedder, global_store=global_store)
+
+
+def _cmd_global_init() -> int:
+    global_path = _global_db_path()
+    global_root = global_path.parent
+    global_root.mkdir(parents=True, exist_ok=True)
+    knowledge_dir = global_root / "knowledge"
+    knowledge_dir.mkdir(exist_ok=True)
+    # Create (or touch) the database by opening a GraphStore.
+    GraphStore(global_path).close()
+    readme_path = global_root / "README.md"
+    if not readme_path.exists():
+        readme_path.write_text(
+            "# Global context-engine graph\n\n"
+            "This directory holds knowledge that applies across all projects.\n\n"
+            "## Layout\n\n"
+            "- `global.db` — the SQLite graph database\n"
+            "- `knowledge/` — source nodes as markdown files (one per folder)\n\n"
+            "## Usage\n\n"
+            "Add nodes with:\n\n"
+            "    ctx --global add-node \"your convention\""
+            " --id conventions/my-rule --type convention\n\n"
+            "Import from a folder tree:\n\n"
+            "    ctx --global import knowledge/\n",
+            encoding="utf-8",
+        )
+    print(f"initialised global graph at {global_path}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="ctx")
     parser.add_argument("--db", default="graph.db", help="sqlite path")
+    parser.add_argument(
+        "--global",
+        dest="use_global",
+        action="store_true",
+        help="target the global db (~/.ctx/global.db) instead of the project db",
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("init", help="create empty db")
@@ -302,8 +351,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_suggest.add_argument("--max-candidates", type=int, default=50)
 
+    sub.add_parser("global-init", help="create the global graph at ~/.ctx/global.db")
+
     args = parser.parse_args(argv)
-    store = GraphStore(Path(args.db))
+
+    # Resolve effective db path: --global overrides --db.
+    db_path = _global_db_path() if args.use_global else Path(args.db)
+    store = GraphStore(db_path)
 
     if args.cmd == "init":
         print(f"initialised {args.db}")
@@ -333,10 +387,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "query":
         embedder = HashEmbedder(dim=store.embed_dim)
         # Derive tree_root from the db path: look for a knowledge/ sibling directory.
-        db_path = Path(args.db).resolve()
-        candidate = db_path.parent / "knowledge"
+        resolved_db = db_path.resolve()
+        candidate = resolved_db.parent / "knowledge"
         tree_root = candidate if candidate.is_dir() else None
-        engine = ContextEngine(store, embedder=embedder, tree_root=tree_root)
+        engine = _build_engine_with_global_fallback(store, embedder=embedder)
+        # Wire tree_root into the feedback applier after construction.
+        if tree_root is not None:
+            from context_engine.feedback import FeedbackApplier  # noqa: PLC0415
+
+            engine.feedback = FeedbackApplier(
+                store, strategies=engine.strategies, tree_root=tree_root
+            )
         metadata_filter = json.loads(args.filter) if args.filter else None
         query = Query(text=args.text, explicit_refs=args.seed)
         resp = engine.answer(query, metadata_filter=metadata_filter)
@@ -420,6 +481,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "suggest-edges":
         return _cmd_suggest_edges(args, store)
+
+    if args.cmd == "global-init":
+        return _cmd_global_init()
 
     parser.print_help()
     return 1

@@ -111,3 +111,16 @@ def test_suggest_edges_non_interactive_mocked(tmp_path: Path, capsys) -> None:
     captured = capsys.readouterr()
     assert "b" in captured.out
     assert "supports" in captured.out
+
+
+def test_global_init_creates_structure(tmp_path: Path, monkeypatch) -> None:
+    """global-init creates global.db and a knowledge/ directory."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+
+    rc = main(["global-init"])
+    assert rc == 0
+
+    global_db = tmp_path / ".ctx" / "global.db"
+    knowledge_dir = tmp_path / ".ctx" / "knowledge"
+    assert global_db.exists(), f"expected global.db at {global_db}"
+    assert knowledge_dir.is_dir(), f"expected knowledge/ dir at {knowledge_dir}"

@@ -146,3 +146,25 @@ def test_engine_uses_default_embedder_when_none_passed() -> None:
     engine = ContextEngine(store)
     assert engine._embedder is not None
     assert isinstance(engine._embedder, (SentenceTransformerEmbedder, HashEmbedder))
+
+
+def test_engine_composes_global_graph_for_seeds() -> None:
+    """Global-store nodes are visible in query results when the project store has none."""
+    from context_engine.embedding import HashEmbedder
+
+    project = GraphStore(":memory:")
+    global_ = GraphStore(":memory:")
+
+    embedder = HashEmbedder(dim=project.embed_dim)
+
+    # Global store has a node about pathlib; project store is empty.
+    global_.upsert_node("normalize paths with pathlib", node_id="conventions/pathlib")
+    global_._set_embedding("conventions/pathlib", embedder.embed("normalize paths with pathlib"))
+
+    engine = ContextEngine(project, embedder=embedder, global_store=global_)
+    resp = engine.answer(Query(text="how to normalize paths"))
+
+    node_ids = {n.id for n in resp.slice_.nodes}
+    assert "conventions/pathlib" in node_ids, (
+        f"expected global node 'conventions/pathlib' in slice, got {node_ids}"
+    )

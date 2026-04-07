@@ -107,8 +107,10 @@ class ContextEngine:
         auto_feedback: bool = False,
         downgrade_threshold: int = 3,
         tree_root: Path | None = None,
+        global_store: GraphStore | None = None,
     ) -> None:
         self.store = store
+        self.global_store = global_store
         self.classifier = classifier or KeywordClassifier()
         self.synthesiser = synthesiser or OfflineSynthesiser()
         self._embedder = embedder
@@ -119,10 +121,19 @@ class ContextEngine:
             self._embedder = embedder
         # embedder.embed takes precedence over the raw embed_fn callable.
         resolved_embed_fn = embedder.embed if embedder is not None else embed_fn
-        self.seeds = SeedSelector(store, embed_fn=resolved_embed_fn)
+        self.seeds = SeedSelector(store, embed_fn=resolved_embed_fn, global_store=global_store)
         self.strategies = StrategyResolver(store)
-        self.traverser = Traverser(store, strategies=self.strategies)
+
+        # Compose traversal store: project + global fallback, or just project.
+        if global_store is not None:
+            from context_engine.composed_store import ComposedStore  # noqa: PLC0415
+
+            traversal_store: GraphStore = ComposedStore(store, global_store)  # type: ignore[assignment]
+        else:
+            traversal_store = store
+        self.traverser = Traverser(traversal_store, strategies=self.strategies)
         self.logic = LogicEngine()
+        # Writes always go to the project store only.
         self.feedback = FeedbackApplier(store, strategies=self.strategies, tree_root=tree_root)
         self.auto_feedback = auto_feedback
         self.downgrade_threshold = downgrade_threshold

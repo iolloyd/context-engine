@@ -283,6 +283,12 @@ def main(argv: list[str] | None = None) -> int:
         help="embedding backend (default: sentence-transformers, falls back to hash)",
     )
 
+    p_garden = sub.add_parser("garden", help="graph health diagnostic")
+    p_garden.add_argument("--dead-weight", type=float, default=0.1,
+                          help="edges below this weight are flagged")
+    p_garden.add_argument("--drift-rate", type=float, default=0.3,
+                          help="strategy nodes below this success rate are flagged")
+
     p_suggest = sub.add_parser("suggest-edges", help="propose edges from an LLM")
     p_suggest.add_argument("node_id", help="id of the node to suggest edges for")
     p_suggest.add_argument(
@@ -386,6 +392,30 @@ def main(argv: list[str] | None = None) -> int:
             f"indexed {indexed} nodes ({already_fresh} already fresh)"
             f" using {type(embedder).__name__}"
         )
+        return 0
+
+    if args.cmd == "garden":
+        from rich.console import Console  # noqa: PLC0415
+        from rich.table import Table  # noqa: PLC0415
+
+        from context_engine.garden import GardenConfig, Gardener  # noqa: PLC0415
+
+        config = GardenConfig(
+            dead_weight_threshold=args.dead_weight,
+            drift_success_rate=args.drift_rate,
+        )
+        gardener = Gardener(store, config)
+        findings = gardener.inspect()
+        if not findings:
+            print("garden: nothing to report — graph looks healthy")
+            return 0
+        table = Table(title="garden report")
+        table.add_column("category")
+        table.add_column("node / edge")
+        table.add_column("suggestion")
+        for f in findings:
+            table.add_row(f.category, f.subject, f.suggestion)
+        Console().print(table)
         return 0
 
     if args.cmd == "suggest-edges":

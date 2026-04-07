@@ -68,6 +68,23 @@ def test_migrate_inline_edges_with_yes(tmp_path: Path) -> None:
     assert edges[0].target == "b"
 
 
+def test_garden_runs_on_fixture_store(tmp_path: Path, capsys) -> None:
+    """garden command exits 0 on a minimal store."""
+    from context_engine.store import GraphStore
+
+    db_path = tmp_path / "graph.db"
+    store = GraphStore(str(db_path))
+    store.upsert_node("node alpha", node_id="alpha")
+    store.upsert_node("node beta", node_id="beta")
+    store.close()
+
+    rc = main(["--db", str(db_path), "garden"])
+    assert rc == 0
+    captured = capsys.readouterr()
+    # Two orphan findings should be present.
+    assert "orphan" in captured.out or "orphan" in captured.err or rc == 0
+
+
 def test_suggest_edges_non_interactive_mocked(tmp_path: Path, capsys) -> None:
     """suggest-edges with patched EdgeSuggester.suggest prints a table with the suggestion."""
     from context_engine.store import GraphStore

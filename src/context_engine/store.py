@@ -302,6 +302,19 @@ class GraphStore:
 
     # ── utility ────────────────────────────────────────────────────────────
 
+    def get_embedding(self, node_id: str) -> list[float] | None:
+        row = self._conn.execute(
+            "SELECT embedding FROM node_embeddings WHERE node_id=?",
+            (node_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return _unpack_embedding(row["embedding"], self.embed_dim)
+
+    def all_edges(self) -> list[Edge]:
+        rows = self._conn.execute("SELECT * FROM edges").fetchall()
+        return [_row_to_edge(r) for r in rows]
+
     def all_node_ids(self) -> list[str]:
         return [r["id"] for r in self._conn.execute("SELECT id FROM nodes").fetchall()]
 

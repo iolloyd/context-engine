@@ -221,6 +221,31 @@ Phased, each phase produces a runnable system that passes its own tests.
   warning, warning suppressed on second call; engine test confirms non-None embedder
   when constructed with no explicit argument; full suite 93 passed + 3 skipped
 
+## Phase 16 — incremental import with content-hash caching ✅
+
+- `_compute_source_hash(readme_path, edges_path)` hashes the raw bytes of
+  `readme.md` and (if present) `edges.yaml` via SHA-256; the digest is
+  injected into `metadata['source_hash']` on every upserted node
+- `FolderTreeSource.import_into` computes the hash before parsing each node;
+  if the stored `source_hash` matches, the node and its explicit edges are
+  skipped entirely, saving parsing and DB writes
+- `ImportReport` gains three new counters: `nodes_created`, `nodes_updated`,
+  `nodes_skipped_unchanged`; the `nodes` field still counts all visited nodes
+- `ContextEngine.index_all` gains a second skip condition: if the node already
+  has an embedding **and** `metadata['indexed_hash'] == metadata['source_hash']`,
+  it is skipped without re-embedding; after embedding, `indexed_hash` is
+  written back via `upsert_node`; return tuple renamed to
+  `(indexed, already_fresh)` to reflect the new semantics
+- `export_from` strips `source_hash` and `indexed_hash` from the on-disk
+  frontmatter so they remain internal system fields rather than user-visible
+  metadata
+- CLI `import` output now prints the three new counters; `index` output prints
+  "already fresh" instead of "already had embeddings"
+- Tests: reimport skips unchanged nodes; reimport detects one edited file;
+  source_hash is a 64-char hex string in every imported node's metadata;
+  second `index_all()` returns `(0, N)` when all nodes are fresh;
+  full suite 98 passed + 3 skipped
+
 ## Next (beyond v0.1)
 
 1. **LLM classifier** — drop-in replacement for `KeywordClassifier`, uses

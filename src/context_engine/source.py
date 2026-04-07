@@ -19,9 +19,10 @@ See ``docs/adr/0001-knowledge-source.md`` for the full rationale.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -126,6 +127,18 @@ def serialise_edges(edges: list[ParsedEdge]) -> str:
 
 # ── importer ───────────────────────────────────────────────────────────────
 
+_SYSTEM_METADATA_KEYS = frozenset({"source_hash", "indexed_hash"})
+
+
+def _compute_source_hash(readme_path: Path, edges_path: Path | None) -> str:
+    """SHA-256 of the readme bytes, optionally combined with the edges file bytes."""
+    h = hashlib.sha256()
+    h.update(readme_path.read_bytes())
+    if edges_path is not None and edges_path.exists():
+        h.update(b"\n---edges---\n")
+        h.update(edges_path.read_bytes())
+    return h.hexdigest()
+
 
 class SourceError(Exception):
     pass
@@ -171,16 +184,36 @@ class FolderTreeSource:
                 )
 
     def import_into(self, store: GraphStore) -> ImportReport:
-        """Rebuild the graph store from the tree."""
+        """Rebuild the graph store from the tree, skipping unchanged nodes."""
         nodes = list(self.walk_nodes())
         node_ids = {n.node_id for n in nodes}
 
+        nodes_created = 0
+        nodes_updated = 0
+        nodes_skipped = 0
+        changed_node_ids: set[str] = set()
+
         for node in nodes:
+            readme_path = self.root / node.node_id / README
+            edges_path = self.root / node.node_id / EDGES_FILE
+            new_hash = _compute_source_hash(readme_path, edges_path)
+
+            existing = store.get_node(node.node_id)
+            if existing is not None and existing.metadata.get("source_hash") == new_hash:
+                nodes_skipped += 1
+                continue
+
+            node.metadata["source_hash"] = new_hash
             store.upsert_node(
                 content=node.content,
                 metadata=node.metadata,
                 node_id=node.node_id,
             )
+            changed_node_ids.add(node.node_id)
+            if existing is None:
+                nodes_created += 1
+            else:
+                nodes_updated += 1
 
         edges = list(self.walk_edges())
         for edge in edges:
@@ -188,7 +221,9 @@ class FolderTreeSource:
                 raise SourceError(
                     f"edge {edge.source} → {edge.target}: target does not exist"
                 )
-            self._upsert_edge(store, edge, derived=False)
+            if edge.source in changed_node_ids:
+                self._upsert_edge(store, edge, derived=False)
+
 
         derived_count = 0
         for edge in self.derive_structural_edges(node_ids):
@@ -199,6 +234,9 @@ class FolderTreeSource:
             nodes=len(nodes),
             explicit_edges=len(edges),
             derived_edges=derived_count,
+            nodes_created=nodes_created,
+            nodes_updated=nodes_updated,
+            nodes_skipped_unchanged=nodes_skipped,
         )
 
     @staticmethod
@@ -226,8 +264,9 @@ class FolderTreeSource:
                 continue
             folder = self.root / nid
             folder.mkdir(parents=True, exist_ok=True)
+            clean_meta = {k: v for k, v in node.metadata.items() if k not in _SYSTEM_METADATA_KEYS}
             parsed = ParsedNode(
-                node_id=nid, content=node.content, metadata=node.metadata
+                node_id=nid, content=node.content, metadata=clean_meta
             )
             (folder / README).write_text(serialise_readme(parsed), encoding="utf-8")
 
@@ -260,3 +299,6 @@ class ImportReport:
     nodes: int
     explicit_edges: int
     derived_edges: int
+    nodes_created: int = field(default=0)
+    nodes_updated: int = field(default=0)
+    nodes_skipped_unchanged: int = field(default=0)

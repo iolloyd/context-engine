@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
 
 from context_engine.source import (
+    _SYSTEM_METADATA_KEYS,
     FolderTreeSource,
     ParsedEdge,
     ParsedNode,
@@ -166,14 +168,18 @@ def test_export_then_reimport_is_stable(tmp_path: Path) -> None:
     # Node counts match
     assert store1.node_count() == store2.node_count()
 
-    # Every node in store1 appears in store2 with same metadata and content
+    # Every node in store1 appears in store2 with same user metadata and content.
+    # System-generated keys (source_hash, indexed_hash) are excluded from comparison
+    # because they are recomputed on each import from the raw file bytes.
     for nid in store1.all_node_ids():
         n1 = store1.get_node(nid)
         n2 = store2.get_node(nid)
         assert n2 is not None, f"missing {nid}"
         assert n1 is not None
         assert n1.content == n2.content
-        assert n1.metadata == n2.metadata
+        user_meta1 = {k: v for k, v in n1.metadata.items() if k not in _SYSTEM_METADATA_KEYS}
+        user_meta2 = {k: v for k, v in n2.metadata.items() if k not in _SYSTEM_METADATA_KEYS}
+        assert user_meta1 == user_meta2
 
     # Every explicit edge survives the round-trip
     for nid in store1.all_node_ids():
@@ -188,3 +194,51 @@ def test_export_then_reimport_is_stable(tmp_path: Path) -> None:
             if not e.metadata.get("derived", False)
         )
         assert explicit_before == explicit_after
+
+
+# ── incremental import / content-hash caching ─────────────────────────────
+
+
+def test_reimport_skips_unchanged_nodes() -> None:
+    store = GraphStore(":memory:")
+    source = FolderTreeSource(FIXTURE_TREE)
+    report_1 = source.import_into(store)
+    report_2 = source.import_into(store)
+
+    assert report_2.nodes_skipped_unchanged == report_1.nodes_created
+    assert report_2.nodes_created == 0
+    assert report_2.nodes_updated == 0
+
+
+def test_reimport_detects_edited_node(tmp_path: Path) -> None:
+    tree_copy = tmp_path / "tree"
+    shutil.copytree(FIXTURE_TREE, tree_copy)
+
+    store = GraphStore(":memory:")
+    source = FolderTreeSource(tree_copy)
+    report_1 = source.import_into(store)
+
+    # Modify exactly one readme to change its content
+    target_readme = tree_copy / "exercises" / "squat" / "readme.md"
+    original = target_readme.read_text(encoding="utf-8")
+    target_readme.write_text(original + "\nExtra line added.\n", encoding="utf-8")
+
+    report_2 = source.import_into(store)
+    n = report_1.nodes_created
+
+    assert report_2.nodes_updated == 1
+    assert report_2.nodes_skipped_unchanged == n - 1
+    assert report_2.nodes_created == 0
+
+
+def test_source_hash_persisted_in_metadata() -> None:
+    store = GraphStore(":memory:")
+    FolderTreeSource(FIXTURE_TREE).import_into(store)
+
+    for nid in store.all_node_ids():
+        node = store.get_node(nid)
+        assert node is not None
+        source_hash = node.metadata.get("source_hash")
+        assert source_hash is not None, f"node {nid} missing source_hash"
+        assert len(source_hash) == 64, f"node {nid} source_hash is not a 64-char hex string"
+        assert all(c in "0123456789abcdef" for c in source_hash)

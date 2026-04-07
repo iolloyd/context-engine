@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from context_engine.embedding import HashEmbedder
 from context_engine.engine import ContextEngine
+from context_engine.source import FolderTreeSource
 from context_engine.store import GraphStore
 from context_engine.types import Query
+
+FIXTURE_TREE = Path(__file__).resolve().parents[1] / "fixtures" / "tree"
 
 
 def test_engine_free_form_query_finds_squat(store: GraphStore) -> None:
@@ -43,3 +48,17 @@ def test_index_all_works_with_default_embedder() -> None:
     indexed, already_had = engine.index_all()
     assert indexed == 0
     assert already_had == 0
+
+
+def test_index_all_skips_freshly_indexed_nodes() -> None:
+    """Second call to index_all() skips all nodes whose indexed_hash matches source_hash."""
+    store = GraphStore(":memory:")
+    FolderTreeSource(FIXTURE_TREE).import_into(store)
+    engine = ContextEngine(store, embedder=HashEmbedder(dim=store.embed_dim))
+
+    indexed_1, already_fresh_1 = engine.index_all()
+    assert indexed_1 > 0
+
+    indexed_2, already_fresh_2 = engine.index_all()
+    assert indexed_2 == 0
+    assert already_fresh_2 > 0

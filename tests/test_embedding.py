@@ -4,14 +4,28 @@ from __future__ import annotations
 
 import math
 import os
+import sys
+import unittest.mock
 
 import pytest
 
 from context_engine.embedding import (
     AnthropicEmbedder,
     Embedder,
+    EmbedderUnavailable,
     HashEmbedder,
+    SentenceTransformerEmbedder,
+    default_embedder,
 )
+
+
+def _sentence_transformers_available() -> bool:
+    try:
+        import sentence_transformers  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
 
 # ── HashEmbedder ─────────────────────────────────────────────────────────────
 
@@ -87,3 +101,97 @@ def test_anthropic_embedder_smoke() -> None:
     assert all(isinstance(x, float) for x in vec)
     norm = math.sqrt(sum(x * x for x in vec))
     assert norm > 0
+
+
+# ── SentenceTransformerEmbedder ───────────────────────────────────────────────
+
+
+@pytest.mark.skipif(
+    not _sentence_transformers_available(),
+    reason="sentence-transformers not installed",
+)
+def test_sentence_transformer_deterministic() -> None:
+    emb = SentenceTransformerEmbedder()
+    text = "Why do I avoid squats?"
+    assert emb.embed(text) == emb.embed(text)
+
+
+@pytest.mark.skipif(
+    not _sentence_transformers_available(),
+    reason="sentence-transformers not installed",
+)
+def test_sentence_transformer_l2_norm() -> None:
+    emb = SentenceTransformerEmbedder()
+    vec = emb.embed("The quick brown fox jumps over the lazy dog")
+    norm_sq = sum(x * x for x in vec)
+    assert abs(norm_sq - 1.0) < 1e-5
+
+
+@pytest.mark.skipif(
+    not _sentence_transformers_available(),
+    reason="sentence-transformers not installed",
+)
+def test_sentence_transformer_semantic_quality() -> None:
+    """Semantic neighbours retrieved correctly; unrelated node excluded."""
+    from context_engine.store import GraphStore
+
+    store = GraphStore(":memory:")
+    emb = SentenceTransformerEmbedder()
+
+    n1 = store.upsert_node("We chose postgres for concurrent write throughput", node_id="n1")
+    n2 = store.upsert_node("The meeting is on Tuesday at 3pm", node_id="n2")
+    n3 = store.upsert_node(
+        "Database migration from SQLite was driven by write contention", node_id="n3"
+    )
+
+    for node in (n1, n2, n3):
+        store._set_embedding(node.id, emb.embed(node.content))
+
+    query_vec = emb.embed("why did we pick postgres")
+    hits = store.knn(query_vec, k=2)
+    result_ids = {node_id for node_id, _ in hits}
+
+    assert "n1" in result_ids
+    assert "n3" in result_ids
+    assert "n2" not in result_ids
+
+
+def test_sentence_transformer_unavailable_raises() -> None:
+    with (
+        unittest.mock.patch.dict(sys.modules, {"sentence_transformers": None}),
+        pytest.raises(EmbedderUnavailable),
+    ):
+        SentenceTransformerEmbedder()
+
+
+# ── default_embedder ──────────────────────────────────────────────────────────
+
+
+def test_default_embedder_fallback_to_hash(capsys: pytest.CaptureFixture) -> None:
+    import context_engine.embedding as emb_mod
+
+    orig_warned = emb_mod._default_warned
+    emb_mod._default_warned = False
+    try:
+        with unittest.mock.patch.dict(sys.modules, {"sentence_transformers": None}):
+            result = default_embedder()
+        assert isinstance(result, HashEmbedder)
+        captured = capsys.readouterr()
+        assert "falling back to HashEmbedder" in captured.err
+    finally:
+        emb_mod._default_warned = orig_warned
+
+
+def test_default_embedder_warning_printed_once(capsys: pytest.CaptureFixture) -> None:
+    import context_engine.embedding as emb_mod
+
+    orig_warned = emb_mod._default_warned
+    emb_mod._default_warned = False
+    try:
+        with unittest.mock.patch.dict(sys.modules, {"sentence_transformers": None}):
+            default_embedder()
+            default_embedder()
+        captured = capsys.readouterr()
+        assert captured.err.count("falling back to HashEmbedder") == 1
+    finally:
+        emb_mod._default_warned = orig_warned

@@ -105,6 +105,19 @@ ctx --db graph.db query "Why do I avoid squats?" --seed exercises/squat
 ctx --db graph.db export fixtures/tree       # write back (feedback loop uses this)
 ```
 
+## Optional: real semantic embeddings
+
+The default `HashEmbedder` is a deterministic offline placeholder. For real semantic
+search, install with the `embeddings` extra:
+
+```bash
+pipx install '/path/to/context-engine[embeddings]'
+# or if already installed:
+pipx inject context-engine sentence-transformers
+```
+
+This downloads a ~80MB model on first use and runs on CPU. No API key required.
+
 ## Status
 
 Phase 0 — scaffolding. Design stable, implementation in progress.

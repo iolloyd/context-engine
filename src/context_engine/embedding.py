@@ -1,6 +1,6 @@
 """Embedder protocol and implementations.
 
-Two implementations ship out of the box:
+Three implementations ship out of the box:
 
 - ``HashEmbedder`` — deterministic, offline, for tests.  No network, no deps
   beyond stdlib.  Default dim=384 matches ``GraphStore``'s default.
@@ -9,6 +9,12 @@ Two implementations ship out of the box:
   (or ``ANTHROPIC_API_KEY`` as fallback), ``CONTEXT_ENGINE_EMBED_MODEL``
   (default ``voyage-3-lite``, 512-dim).  The caller must construct
   ``GraphStore(embed_dim=512)`` when using this embedder.
+- ``SentenceTransformerEmbedder`` — local semantic embedder using the
+  ``sentence-transformers`` optional package.  384-dim, CPU-fast, no API key.
+  Install with: ``pip install 'context-engine[embeddings]'``.
+
+``default_embedder()`` returns ``SentenceTransformerEmbedder`` when the package
+is available, falling back to ``HashEmbedder`` with a one-time stderr warning.
 """
 
 from __future__ import annotations
@@ -23,6 +29,10 @@ class Embedder(Protocol):
     """Single-method protocol: map text to a float vector."""
 
     def embed(self, text: str) -> list[float]: ...
+
+
+class EmbedderUnavailable(RuntimeError):
+    """Raised when an embedder cannot be constructed (missing package, missing API key, etc.)."""
 
 
 class HashEmbedder:
@@ -94,3 +104,63 @@ class AnthropicEmbedder:
         with urllib.request.urlopen(req) as resp:  # noqa: S310
             data = json.loads(resp.read())
         return data["data"][0]["embedding"]
+
+
+class SentenceTransformerEmbedder:
+    """Local semantic embedder using sentence-transformers.
+
+    Default model: ``sentence-transformers/all-MiniLM-L6-v2`` — 384 dimensions,
+    ~80MB, runs on CPU in a few ms per encoding.  No API key, no network after the
+    first model download.
+
+    The ``sentence_transformers`` package is imported lazily in ``__init__`` so this
+    class can be defined even when the optional dependency is absent.  Attempting to
+    construct it without the package installed raises ``EmbedderUnavailable`` with a
+    clear install hint.
+    """
+
+    DEFAULT_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+    DIM = 384
+
+    def __init__(self, model_name: str = DEFAULT_MODEL) -> None:
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError as exc:
+            raise EmbedderUnavailable(
+                "sentence-transformers not installed; "
+                "install with: pipx inject context-engine sentence-transformers "
+                "or pip install 'context-engine[embeddings]'"
+            ) from exc
+        self._model = SentenceTransformer(model_name)
+        self.model_name = model_name
+
+    def embed(self, text: str) -> list[float]:
+        vec = self._model.encode(text, normalize_embeddings=True)
+        return [float(x) for x in vec]
+
+
+_default_warned = False
+
+
+def default_embedder() -> Embedder:
+    """Return the best available embedder.
+
+    Tries ``SentenceTransformerEmbedder`` first; falls back to ``HashEmbedder``
+    with a one-time warning printed to stderr so the user knows why semantic quality
+    may be poor.
+    """
+    global _default_warned
+    try:
+        return SentenceTransformerEmbedder()
+    except EmbedderUnavailable as exc:
+        if not _default_warned:
+            import sys
+
+            print(
+                f"context-engine: {exc}\n"
+                "               falling back to HashEmbedder "
+                "(semantic search will be keyword-based).",
+                file=sys.stderr,
+            )
+            _default_warned = True
+        return HashEmbedder()

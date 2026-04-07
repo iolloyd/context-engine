@@ -33,11 +33,13 @@ def test_index_all_counts(store: GraphStore) -> None:
     assert already_had2 == total
 
 
-def test_index_all_requires_embedder() -> None:
+def test_index_all_works_with_default_embedder() -> None:
+    """ContextEngine constructed without an explicit embedder uses the default."""
     store = GraphStore(":memory:")
     engine = ContextEngine(store)
-    try:
-        engine.index_all()
-        raise AssertionError("expected RuntimeError")
-    except RuntimeError:
-        pass
+    # default_embedder() always succeeds (SentenceTransformerEmbedder or HashEmbedder)
+    assert engine._embedder is not None
+    # index_all() on an empty store should return (0, 0) without raising
+    indexed, already_had = engine.index_all()
+    assert indexed == 0
+    assert already_had == 0

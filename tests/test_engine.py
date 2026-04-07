@@ -137,3 +137,12 @@ def test_strategy_downgrade_fires_after_threshold(store: GraphStore) -> None:
     node = engine.strategies.get_strategy_node(tuple_)
     assert node is not None
     assert node.metadata.get("downgrade_count", 0) == 1
+
+
+def test_engine_uses_default_embedder_when_none_passed() -> None:
+    from context_engine.embedding import HashEmbedder, SentenceTransformerEmbedder
+
+    store = GraphStore(":memory:")
+    engine = ContextEngine(store)
+    assert engine._embedder is not None
+    assert isinstance(engine._embedder, (SentenceTransformerEmbedder, HashEmbedder))

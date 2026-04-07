@@ -61,9 +61,9 @@ def main(argv: list[str] | None = None) -> int:
     p_index = sub.add_parser("index", help="backfill embeddings for all nodes")
     p_index.add_argument(
         "--embedder",
-        choices=["hash", "anthropic"],
-        default="hash",
-        help="embedding backend (default: hash)",
+        choices=["hash", "anthropic", "sentence-transformers"],
+        default="sentence-transformers",
+        help="embedding backend (default: sentence-transformers, falls back to hash)",
     )
 
     args = parser.parse_args(argv)
@@ -135,8 +135,13 @@ def main(argv: list[str] | None = None) -> int:
             from context_engine.embedding import AnthropicEmbedder
 
             embedder = AnthropicEmbedder()
+        elif args.embedder == "sentence-transformers":
+            from context_engine.embedding import default_embedder
+
+            embedder = default_embedder()
         else:
             embedder = HashEmbedder(dim=store.embed_dim)
+        print(f"using {type(embedder).__name__}")
         engine = ContextEngine(store, embedder=embedder)
         indexed, already_had = engine.index_all()
         print(f"indexed {indexed} nodes ({already_had} already had embeddings)")

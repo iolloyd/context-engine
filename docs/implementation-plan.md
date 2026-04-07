@@ -198,6 +198,29 @@ Phased, each phase produces a runnable system that passes its own tests.
   set-weight, query, trace determinism, quit, unknown command);
   full suite 86 passed + 3 skipped
 
+## Phase 15 — sentence-transformers semantic embedder ✅
+
+- `EmbedderUnavailable` exception added to `embedding.py` for clean failure when
+  optional packages are absent
+- `SentenceTransformerEmbedder` wraps `sentence-transformers/all-MiniLM-L6-v2`
+  (384-dim, CPU-fast, no API key); lazy import of `sentence_transformers` so the
+  engine remains importable without the extra package
+- `sentence-transformers>=2.7` added as `[project.optional-dependencies].embeddings`;
+  install via `pip install 'context-engine[embeddings]'` or
+  `pipx inject context-engine sentence-transformers`
+- `default_embedder()` module-level helper: tries `SentenceTransformerEmbedder`,
+  falls back to `HashEmbedder` with a one-time stderr warning; `_default_warned`
+  flag suppresses duplicate warnings within a process
+- `ContextEngine.__init__` calls `default_embedder()` when neither `embedder=` nor
+  `embed_fn=` is supplied; no change to callers that pass an explicit embedder
+- `ctx index` gains `sentence-transformers` as a choice (new default); prints which
+  embedder was resolved so the user can verify the happy path
+- README updated with optional-install instructions
+- Tests: determinism, L2 norm, semantic quality (n1/n3 retrieved, n2 excluded),
+  `EmbedderUnavailable` on missing package, `default_embedder()` fallback with
+  warning, warning suppressed on second call; engine test confirms non-None embedder
+  when constructed with no explicit argument; full suite 93 passed + 3 skipped
+
 ## Next (beyond v0.1)
 
 1. **LLM classifier** — drop-in replacement for `KeywordClassifier`, uses

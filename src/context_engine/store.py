@@ -13,7 +13,7 @@ import struct
 import uuid
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +24,23 @@ EMBED_DIM = 384  # default; override via GraphStore(embed_dim=...)
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _json_default(value: Any) -> Any:
+    """Coerce metadata values that are not natively JSON-serialisable.
+
+    YAML frontmatter parses ``2026-02-14`` as :class:`datetime.date` and
+    ``2026-02-14T10:00:00`` as :class:`datetime.datetime`; both land here.
+    Any other non-scalar value is stringified as a last resort so a single
+    bad key cannot break an entire import.
+    """
+    if isinstance(value, datetime | date):
+        return value.isoformat()
+    return str(value)
+
+
+def _dumps(value: Any) -> str:
+    return json.dumps(value, default=_json_default)
 
 
 def _pack_embedding(vec: list[float]) -> bytes:
@@ -133,7 +150,7 @@ class GraphStore:
                 metadata=excluded.metadata,
                 updated_at=excluded.updated_at
             """,
-            (node_id, content, json.dumps(meta), now, now),
+            (node_id, content, _dumps(meta), now, now),
         )
         if embedding is not None:
             self._set_embedding(node_id, embedding)
@@ -200,7 +217,7 @@ class GraphStore:
                 metadata=excluded.metadata,
                 updated_at=excluded.updated_at
             """,
-            (edge_id, source, target, content, json.dumps(meta), now, now),
+            (edge_id, source, target, content, _dumps(meta), now, now),
         )
         return self.get_edge(edge_id)  # type: ignore[return-value]
 
@@ -240,7 +257,7 @@ class GraphStore:
         meta["weight"] = max(0.0, min(1.0, new_weight))
         self._conn.execute(
             "UPDATE edges SET metadata=?, updated_at=? WHERE id=?",
-            (json.dumps(meta), _now(), edge_id),
+            (_dumps(meta), _now(), edge_id),
         )
 
     # ── embeddings / seed search ────────────────────────────────────────────

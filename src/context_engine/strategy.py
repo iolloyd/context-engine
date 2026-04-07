@@ -203,6 +203,40 @@ class StrategyResolver:
             preserve_rule_chains=content.get("preserve_rule_chains", True),
         )
 
+    # ── downgrade ────────────────────────────────────────────────────────────
+
+    def downgrade(self, tuple_: QueryTuple) -> None:
+        """Mark the strategy for *tuple_* as underpowered.
+
+        Permanently bumps the stored strategy's budget, depth, and weight_floor
+        so future queries of the same shape start wider.  No-op if the strategy
+        node does not exist.
+
+        Caps: budget ≤ 200, depth ≤ 10.
+        """
+        node = self.get_strategy_node(tuple_)
+        if node is None:
+            return
+
+        meta = dict(node.metadata)
+        content = json.loads(node.content)
+
+        budget = min(int(content.get("budget", 20) * 1.5), 200)
+        depth = min(content.get("depth", 3) + 1, 10)
+        weight_floor = max(0.0, content.get("weight_floor", 0.2) - 0.05)
+
+        content["budget"] = budget
+        content["depth"] = depth
+        content["weight_floor"] = weight_floor
+
+        meta["downgrade_count"] = int(meta.get("downgrade_count", 0)) + 1
+
+        self.store.upsert_node(
+            content=json.dumps(content),
+            metadata=meta,
+            node_id=self.get_strategy_node_id(tuple_),
+        )
+
     # ── feedback ─────────────────────────────────────────────────────────────
 
     def record_success(
@@ -274,13 +308,36 @@ class StrategyResolver:
         )
 
 
-def widen(strategy: TraversalStrategy) -> TraversalStrategy:
-    """Escape hatch for repeated gap-detection failures."""
+def widen(strategy: TraversalStrategy, level: int = 1) -> TraversalStrategy:
+    """Escape hatch for repeated gap-detection failures.
+
+    Widen is always applied to the *original* strategy — callers must pass the
+    desired level rather than chaining calls.
+
+    - ``level=0`` — no-op; returns *strategy* unchanged.
+    - ``level=1`` — 2× budget, +1 depth, weight_floor decreased by 0.1 (min 0.0),
+      edge_types preserved.
+    - ``level=2`` — 4× budget, +2 depth, weight_floor = 0.0, edge_types cleared
+      (no filter).
+    - ``level >= 3`` — clamped to level 2.
+    """
+    if level <= 0:
+        return strategy
+    level = min(level, 2)
+    if level == 1:
+        return strategy.model_copy(
+            update={
+                "budget": strategy.budget * 2,
+                "depth": strategy.depth + 1,
+                "weight_floor": max(0.0, strategy.weight_floor - 0.1),
+            }
+        )
+    # level == 2: full widen, no filter
     return strategy.model_copy(
         update={
-            "budget": strategy.budget * 2,
-            "depth": strategy.depth + 1,
-            "weight_floor": max(0.0, strategy.weight_floor - 0.1),
-            "edge_types": [],  # remove the filter entirely
+            "budget": strategy.budget * 4,
+            "depth": strategy.depth + 2,
+            "weight_floor": 0.0,
+            "edge_types": [],
         }
     )

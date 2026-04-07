@@ -104,6 +104,7 @@ class ContextEngine:
         embed_fn: Callable[[str], list[float]] | None = None,
         embedder: Embedder | None = None,
         auto_feedback: bool = False,
+        downgrade_threshold: int = 3,
     ) -> None:
         self.store = store
         self.classifier = classifier or KeywordClassifier()
@@ -117,6 +118,14 @@ class ContextEngine:
         self.logic = LogicEngine()
         self.feedback = FeedbackApplier(store, strategies=self.strategies)
         self.auto_feedback = auto_feedback
+        self.downgrade_threshold = downgrade_threshold
+        self._signature_failures: dict[tuple, int] = {}
+        self.stats: dict[str, int] = {
+            "queries_total": 0,
+            "widens_level_1": 0,
+            "widens_level_2": 0,
+            "strategy_downgrades": 0,
+        }
 
     def index_all(self) -> tuple[int, int]:
         """Backfill embeddings for every node that does not yet have one.
@@ -139,67 +148,99 @@ class ContextEngine:
             indexed += 1
         return indexed, already_had
 
+    def _signature(self, seeds: list[str], tuple_: QueryTuple) -> tuple:
+        """Return a hashable identifier for the (seeds, tuple) pair."""
+        return (frozenset(seeds), tuple_.intent.value, tuple_.focus.value)
+
+    def _emit_auto_feedback(
+        self, tuple_: QueryTuple, response: EngineResponse
+    ) -> None:
+        slice_node_ids = {n.id for n in response.slice_.nodes}
+        used_set = set(response.used_node_ids)
+        helpful_edge_ids = [
+            e.id for e in response.slice_.edges if e.target in used_set
+        ]
+        noisy_edge_ids = [
+            e.id
+            for e in response.slice_.edges
+            if e.target in slice_node_ids and e.target not in used_set
+        ]
+        signal = FeedbackSignal(
+            query_text="",
+            used_node_ids=response.used_node_ids,
+            helpful_edge_ids=helpful_edge_ids,
+            noisy_edge_ids=noisy_edge_ids,
+            source="llm",
+            delta=0.5,
+            query_tuple=tuple_,
+        )
+        self.feedback.apply(signal)
+
     def answer(
         self,
         query: Query,
         metadata_filter: dict[str, object] | None = None,
     ) -> EngineResponse:
+        self.stats["queries_total"] += 1
+
         tuple_ = self.classifier.classify(query)
         seeds = self.seeds.select(query, metadata_filter=metadata_filter)
-        strategy = self.strategies.resolve(tuple_, seeds=seeds)
-        slice_ = self.traverser.traverse(strategy, tuple_)
+        original_strategy = self.strategies.resolve(tuple_, seeds=seeds)
+        signature = self._signature(seeds, tuple_)
 
-        logic_results: list[LogicResult] = []
-        if tuple_.intent in (Intent.EVALUATE, Intent.ACT):
-            logic_results = self.logic.evaluate(slice_)
+        MAX_WIDEN_LEVEL = 2
+        widen_level = 0
+        needed_widen = False
+        gap_flag = False
+        had_gap = False
 
-        # Gap detection pass 1: any logic result that flagged missing facts
-        # widens the traversal and retries once.
-        needed_widen_logic = False
-        if any(r.missing for r in logic_results):
-            needed_widen_logic = True
-            wider_logic = widen(strategy)
-            slice_ = self.traverser.traverse(wider_logic, tuple_)
-            logic_results = self.logic.evaluate(slice_)
+        while True:
+            strategy = (
+                original_strategy
+                if widen_level == 0
+                else widen(original_strategy, level=widen_level)
+            )
+            slice_ = self.traverser.traverse(strategy, tuple_)
 
-        response = self.synthesiser.synthesise(query, tuple_, slice_, logic_results)
-
-        # Gap detection pass 2: synthesiser signals missing knowledge.
-        # Widen once more and re-synthesise if we haven't already widened twice.
-        needed_widen = needed_widen_logic
-        widen_count = 1 if needed_widen_logic else 0
-        if response.missing and widen_count < 2:
-            needed_widen = True
-            wider_synth = widen(strategy)
-            slice_ = self.traverser.traverse(wider_synth, tuple_)
+            logic_results: list[LogicResult] = []
             if tuple_.intent in (Intent.EVALUATE, Intent.ACT):
                 logic_results = self.logic.evaluate(slice_)
+
             response = self.synthesiser.synthesise(query, tuple_, slice_, logic_results)
 
+            logic_gap = any(r.missing for r in logic_results)
+            synth_gap = bool(response.missing)
+            had_gap = logic_gap or synth_gap
+
+            if not had_gap:
+                break
+
+            if widen_level >= MAX_WIDEN_LEVEL:
+                gap_flag = True
+                needed_widen = True
+                break
+
+            widen_level += 1
+            needed_widen = True
+            self.stats[f"widens_level_{widen_level}"] += 1
+
+        # Track signature-level failures for strategy downgrade.
+        if widen_level >= MAX_WIDEN_LEVEL and had_gap:
+            self._signature_failures[signature] = (
+                self._signature_failures.get(signature, 0) + 1
+            )
+            if self._signature_failures[signature] >= self.downgrade_threshold:
+                self.strategies.downgrade(tuple_)
+                self.stats["strategy_downgrades"] += 1
+                self._signature_failures[signature] = 0
+        elif not had_gap:
+            self._signature_failures.pop(signature, None)
+
         response.needed_widen = needed_widen
-        response.gap_flag = bool(response.missing) or needed_widen
+        response.gap_flag = gap_flag
 
         if self.auto_feedback:
-            slice_node_ids = {n.id for n in response.slice_.nodes}
-            used_set = set(response.used_node_ids)
-            helpful_edge_ids = [
-                e.id for e in response.slice_.edges if e.target in used_set
-            ]
-            noisy_edge_ids = [
-                e.id
-                for e in response.slice_.edges
-                if e.target in slice_node_ids and e.target not in used_set
-            ]
-            signal = FeedbackSignal(
-                query_text=query.text,
-                used_node_ids=response.used_node_ids,
-                helpful_edge_ids=helpful_edge_ids,
-                noisy_edge_ids=noisy_edge_ids,
-                source="llm",
-                delta=0.5,
-                query_tuple=tuple_,
-            )
-            self.feedback.apply(signal)
+            self._emit_auto_feedback(tuple_, response)
 
         return response
 

@@ -151,6 +151,29 @@ Phased, each phase produces a runnable system that passes its own tests.
 - Tests: 10 new tests (8 in `test_strategy.py`, 1 in `test_feedback.py`,
   1 in `test_engine.py`); full suite 69 passed + 3 skipped
 
+## Phase 13 — progressive widen heuristic ✅
+
+- `widen()` in `strategy.py` gains a `level` parameter (default 1 for
+  backward compatibility):
+  - level 0: no-op
+  - level 1: 2× budget, +1 depth, weight_floor -= 0.1, edge_types preserved
+  - level 2: 4× budget, +2 depth, weight_floor = 0.0, edge_types cleared
+  - level ≥ 3: clamped to level 2
+  - Widen applied to the original strategy; not compounding
+- `StrategyResolver.downgrade(tuple_)`: permanently bumps budget (×1.5, cap 200),
+  depth (+1, cap 10), weight_floor (-0.05); increments `metadata.downgrade_count`
+- `ContextEngine.answer()` unified widen loop: synthesiser called at each widen
+  level; breaks on first gap-free response or on reaching MAX_WIDEN_LEVEL
+- `ContextEngine.__init__` gains `downgrade_threshold` parameter (default 3)
+- Prometheus-style `engine.stats` dict: `queries_total`, `widens_level_1`,
+  `widens_level_2`, `strategy_downgrades`
+- Signature-level failure tracking via `_signature_failures`; after
+  `downgrade_threshold` max-widen failures on the same (seeds, intent, focus),
+  the strategy node is permanently widened via `downgrade()`
+- Tests: 6 new strategy tests (widen levels 0/1/2/clamp, downgrade, downgrade
+  caps) + 3 new engine tests (three-tier progression, no-widen success,
+  downgrade-fires-after-threshold); full suite 78 passed + 3 skipped
+
 ## Next (beyond v0.1)
 
 1. **LLM classifier** — drop-in replacement for `KeywordClassifier`, uses

@@ -48,6 +48,8 @@ def main(argv: list[str] | None = None) -> int:
     p_query.add_argument("--seed", action="append", default=[], help="explicit seed node id")
     p_query.add_argument("--filter", help="metadata filter as JSON")
 
+    sub.add_parser("repl", help="interactive graph editor")
+
     sub.add_parser("dump")
 
     p_import = sub.add_parser("import", help="build the graph from a folder tree")
@@ -99,6 +101,13 @@ def main(argv: list[str] | None = None) -> int:
         query = Query(text=args.text, explicit_refs=args.seed)
         resp = engine.answer(query, metadata_filter=metadata_filter)
         print(resp.text)
+        return 0
+
+    if args.cmd == "repl":
+        from context_engine.repl import Repl  # noqa: PLC0415
+
+        engine = ContextEngine(store)
+        Repl(store=store, engine=engine).run()
         return 0
 
     if args.cmd == "dump":

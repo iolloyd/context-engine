@@ -174,6 +174,30 @@ Phased, each phase produces a runnable system that passes its own tests.
   caps) + 3 new engine tests (three-tier progression, no-widen success,
   downgrade-fires-after-threshold); full suite 78 passed + 3 skipped
 
+## Phase 14 — graph editor REPL ✅
+
+- `TraceEvent` dataclass added to `traversal.py`; `Traverser.__init__` gains an
+  optional `observer: Callable[[TraceEvent], None]` parameter
+- Events emitted inside `_bfs_from`: `seed`, `pop`, `collect`, `expand`, `done`
+  (budget exhaustion); and `rule_chain` inside `_close_rule_chains`
+- Observer call is a single `if` check — zero overhead when not set; no
+  `TraceEvent` objects constructed unless observer is present
+- New `src/context_engine/repl.py`: `Repl` class with `run()` loop and
+  `execute(line) -> bool` seam; commands: `help`, `show`, `neighbors`, `query`,
+  `set-weight`, `trace`, `stats`, `quit`/`exit`/`q`
+- `query` command accepts `"<text>" [seed1 seed2 ...]` and diffs the new slice
+  against the previous one using green `+`, red `-`, and dim unchanged lines
+- `trace` command runs a fresh `Traverser` with an event collector and prints
+  all events as a rich Table; output is deterministic for a fixed graph/seeds
+- Pretty output via `rich.console.Console`, `rich.table.Table`,
+  `rich.panel.Panel` — only these three rich primitives used
+- `ctx repl` subcommand wired into `cli.py`; `Repl` import is lazy so other
+  subcommands pay no startup cost
+- `rich>=13.0` added to `[project].dependencies` in `pyproject.toml`
+- Tests: 8 new tests in `tests/test_repl.py` (help, show, neighbors,
+  set-weight, query, trace determinism, quit, unknown command);
+  full suite 86 passed + 3 skipped
+
 ## Next (beyond v0.1)
 
 1. **LLM classifier** — drop-in replacement for `KeywordClassifier`, uses

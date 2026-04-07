@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import contextlib
 import heapq
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from context_engine.store import GraphStore
@@ -37,6 +38,18 @@ from context_engine.types import (
 )
 
 
+@dataclass
+class TraceEvent:
+    """A single step emitted by the traverser when an observer is installed."""
+
+    kind: str  # "seed", "pop", "collect", "expand", "skip", "rule_chain", "done"
+    depth: int
+    node_id: str | None = None
+    edge_id: str | None = None
+    priority: float | None = None
+    reason: str | None = None
+
+
 @dataclass(order=True)
 class _PQItem:
     priority: float
@@ -46,9 +59,15 @@ class _PQItem:
 
 
 class Traverser:
-    def __init__(self, store: GraphStore, strategies: StrategyResolver | None = None) -> None:
+    def __init__(
+        self,
+        store: GraphStore,
+        strategies: StrategyResolver | None = None,
+        observer: Callable[[TraceEvent], None] | None = None,
+    ) -> None:
         self.store = store
         self.strategies = strategies
+        self.observer = observer
 
     # ── public entry ────────────────────────────────────────────────────────
 
@@ -153,6 +172,9 @@ class Traverser:
             return
         seed_type = seed_node.type
 
+        if self.observer is not None:
+            self.observer(TraceEvent(kind="seed", depth=0, node_id=seed))
+
         pq: list[_PQItem] = []
         heapq.heappush(pq, _PQItem(priority=0.0, depth=0, node_id=seed))
         visited: set[str] = set()
@@ -164,12 +186,31 @@ class Traverser:
                 continue
             visited.add(item.node_id)
 
+            if self.observer is not None:
+                self.observer(
+                    TraceEvent(
+                        kind="pop",
+                        depth=item.depth,
+                        node_id=item.node_id,
+                        priority=item.priority,
+                    )
+                )
+
             # Add node to the slice
             if item.node_id not in collected_node_ids:
                 collected_node_ids.add(item.node_id)
                 collected_this_run += 1
                 if item.via_edge is not None:
                     collected_edges[item.via_edge.id] = item.via_edge
+                if self.observer is not None:
+                    self.observer(
+                        TraceEvent(
+                            kind="collect",
+                            depth=item.depth,
+                            node_id=item.node_id,
+                            edge_id=item.via_edge.id if item.via_edge is not None else None,
+                        )
+                    )
 
             if item.depth >= strategy.depth:
                 continue
@@ -180,6 +221,7 @@ class Traverser:
                 edge_types=strategy.edge_types or None,
                 weight_floor=strategy.weight_floor,
             )
+            depth = item.depth + 1
             for edge in edges:
                 if edge.target in visited:
                     continue
@@ -191,7 +233,7 @@ class Traverser:
                 prio = self._priority(
                     edge=edge,
                     target=target,
-                    depth=item.depth + 1,
+                    depth=depth,
                     seed_type=seed_type,
                     strategy=strategy,
                     tuple_=tuple_,
@@ -201,11 +243,24 @@ class Traverser:
                     pq,
                     _PQItem(
                         priority=prio,
-                        depth=item.depth + 1,
+                        depth=depth,
                         node_id=edge.target,
                         via_edge=edge,
                     ),
                 )
+                if self.observer is not None:
+                    self.observer(
+                        TraceEvent(
+                            kind="expand",
+                            depth=depth,
+                            node_id=edge.target,
+                            edge_id=edge.id,
+                            priority=prio,
+                        )
+                    )
+
+        if self.observer is not None and collected_this_run >= budget:
+            self.observer(TraceEvent(kind="done", depth=0, reason=f"budget {budget} reached"))
 
     # ── priority function ──────────────────────────────────────────────────
 
@@ -282,6 +337,16 @@ class Traverser:
                     continue
                 collected_node_ids.add(edge.target)
                 added += 1
+                if self.observer is not None:
+                    self.observer(
+                        TraceEvent(
+                            kind="rule_chain",
+                            depth=0,
+                            node_id=edge.target,
+                            edge_id=edge.id,
+                            reason="rule chain closure",
+                        )
+                    )
                 if target.type == "rule" and edge.target not in seen:
                     frontier.append(edge.target)
                     seen.add(edge.target)

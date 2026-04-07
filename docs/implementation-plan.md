@@ -334,6 +334,45 @@ Phased, each phase produces a runnable system that passes its own tests.
 - Tests: 11 new tests in `tests/test_garden.py`, 1 new test in `tests/test_cli.py`
 - Full suite: 125 passed + 4 skipped
 
+## Phase 20 — global graph with project-level composition ✅
+
+Closes issue #23. Completes the pro v1 roadmap.
+
+### Goals
+
+Enable cross-project knowledge by adding a global graph at `~/.ctx/global.db`
+(override via `CTX_GLOBAL_DB`). Project queries automatically compose with the
+global graph; local nodes always win on id collision.
+
+### Implementation
+
+- New `src/context_engine/composed_store.py`: `ComposedStore` — duck-typed
+  read-only wrapper over two `GraphStore` instances. Implements `get_node`,
+  `get_nodes`, `out_edges`, `in_edges`, `get_edge`, `knn`, `all_node_ids`.
+  Project store takes priority; edge results are unioned.
+- `src/context_engine/seeds.py`: `SeedSelector` gains optional `global_store`
+  parameter. Seed selection draws from both stores via a `ComposedStore`.
+- `src/context_engine/engine.py`: `ContextEngine` gains optional `global_store`
+  parameter. When present, wraps both stores in a `ComposedStore` for
+  traversal. Writes (feedback, strategy mutations) always target the project
+  store only.
+- `src/context_engine/cli.py`:
+  - `--global` top-level flag routes operations to the global db.
+  - `global-init` subcommand creates `~/.ctx/global.db`, `~/.ctx/knowledge/`,
+    and a `~/.ctx/README.md`.
+  - `query` command uses `_build_engine_with_global_fallback` to automatically
+    compose with the global graph when `~/.ctx/global.db` exists.
+- Tests: 4 new tests in `tests/test_composed_store.py`, 1 in `tests/test_engine.py`,
+  1 in `tests/test_cli.py`.
+- Full suite: 131 passed + 4 skipped
+
+## End of pro v1 roadmap
+
+All 20 phases complete. The engine now supports:
+semantic search, graph traversal, progressive widening, strategy learning,
+feedback loops, incremental import, LLM-assisted edges, graph health
+diagnostics, and global cross-project knowledge composition.
+
 ## Next (beyond v0.1)
 
 1. **LLM classifier** — drop-in replacement for `KeywordClassifier`, uses

@@ -16,16 +16,27 @@ reliability is encoded in ``s``: user > logic > llm.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from context_engine.store import GraphStore
 from context_engine.types import FeedbackSignal
+
+if TYPE_CHECKING:
+    from context_engine.strategy import StrategyResolver
 
 _SOURCE_SCALE = {"user": 1.0, "logic_engine": 0.8, "llm": 0.4}
 
 
 class FeedbackApplier:
-    def __init__(self, store: GraphStore, alpha: float = 0.15) -> None:
+    def __init__(
+        self,
+        store: GraphStore,
+        alpha: float = 0.15,
+        strategies: StrategyResolver | None = None,
+    ) -> None:
         self.store = store
         self.alpha = alpha
+        self.strategies = strategies
 
     def apply(self, signal: FeedbackSignal) -> dict[str, float]:
         """Apply signal and return the updated weights keyed by edge id."""
@@ -65,6 +76,23 @@ class FeedbackApplier:
                     content="inferred from feedback signal",
                 )
                 updates[edge.id] = edge.weight
+
+        # Propagate the signal to the strategy resolver when available.
+        if self.strategies is not None and signal.query_tuple is not None:
+            helpful_types = [
+                e.type
+                for eid in signal.helpful_edge_ids
+                if (e := self.store.get_edge(eid)) is not None
+            ]
+            noisy_types = [
+                e.type
+                for eid in signal.noisy_edge_ids
+                if (e := self.store.get_edge(eid)) is not None
+            ]
+            if len(helpful_types) >= len(noisy_types):
+                self.strategies.record_success(signal.query_tuple, helpful_types, noisy_types)
+            else:
+                self.strategies.record_failure(signal.query_tuple, helpful_types, noisy_types)
 
         return updates
 

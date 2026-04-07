@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from context_engine.feedback import FeedbackApplier
 from context_engine.store import GraphStore
-from context_engine.types import FeedbackSignal
+from context_engine.strategy import StrategyResolver
+from context_engine.types import FeedbackSignal, Focus, Intent, QueryTuple
 
 
 def test_helpful_edge_weight_increases(store: GraphStore) -> None:
@@ -20,6 +21,29 @@ def test_helpful_edge_weight_increases(store: GraphStore) -> None:
     after = store.get_edge(edge.id)
     assert after is not None
     assert after.weight > before
+
+
+def test_strategy_mutation_via_feedback_signal(store: GraphStore) -> None:
+    """FeedbackApplier with a StrategyResolver updates success_count on the strategy node."""
+    resolver = StrategyResolver(store)
+    resolver.bootstrap()
+    applier = FeedbackApplier(store, strategies=resolver)
+
+    edge = store.out_edges("squat", edge_types=["because_of"])[0]
+    t = QueryTuple(intent=Intent.RETRIEVE, focus=Focus.CAUSAL)
+    signal = FeedbackSignal(
+        query_text="why avoid squat",
+        used_node_ids=["squat", "knee"],
+        helpful_edge_ids=[edge.id],
+        source="user",
+        delta=1.0,
+        query_tuple=t,
+    )
+    applier.apply(signal)
+
+    node = resolver.get_strategy_node(t)
+    assert node is not None
+    assert node.metadata["success_count"] >= 1
 
 
 def test_missing_nodes_create_learned_edges(store: GraphStore) -> None:

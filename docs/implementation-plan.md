@@ -107,6 +107,24 @@ Phased, each phase produces a runnable system that passes its own tests.
   tokenisation, different-tokens-different-vectors, `SeedSelector` returns
   squat in top-k for "Why do I avoid squats?", end-to-end free-form engine query
 
+## Phase 11 — Prolog logic engine ✅
+
+- `PrologLogicEngine` in `prolog_logic.py`: subprocess wrapper around SWI-Prolog
+- Rule nodes with `metadata.language=prolog` are compiled to a temp `.pl` file and
+  evaluated via `swipl -q -f`; JSON-dialect rule nodes are silently skipped so both
+  engines can run over the same slice without conflict
+- Fact schema auto-generated from `ContextSlice`: `node/3`, `edge/4`, `metadata/3`
+- Multi-clause rule bodies supported via `%---` separator: helper predicates emitted
+  verbatim, last chunk becomes body of `passed/0`
+- `MissingFact` semantics preserved: `existence_error` from Prolog surfaced as
+  `LogicResult(missing=[predicate/arity])`
+- `PrologUnavailable` exception on missing `swipl` binary
+- `is_available()` helper for conditional test skipping
+- Drop-in replacement: `ContextEngine.logic` can be swapped to `PrologLogicEngine()`
+  without touching orchestration
+- Tests: fact serialisation, mocked pass/missing, real swipl threshold rule,
+  helper predicate via `%---`, end-to-end `ContextEngine` swap
+
 ## Next (beyond v0.1)
 
 1. **LLM classifier** — drop-in replacement for `KeywordClassifier`, uses

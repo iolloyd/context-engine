@@ -110,6 +110,11 @@ class ContextEngine:
         self.classifier = classifier or KeywordClassifier()
         self.synthesiser = synthesiser or OfflineSynthesiser()
         self._embedder = embedder
+        if embedder is None and embed_fn is None:
+            from context_engine.embedding import default_embedder  # noqa: PLC0415
+
+            embedder = default_embedder()
+            self._embedder = embedder
         # embedder.embed takes precedence over the raw embed_fn callable.
         resolved_embed_fn = embedder.embed if embedder is not None else embed_fn
         self.seeds = SeedSelector(store, embed_fn=resolved_embed_fn)

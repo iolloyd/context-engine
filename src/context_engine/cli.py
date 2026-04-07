@@ -21,8 +21,10 @@ from context_engine.source import (
     EDGES_FILE,
     README,
     FolderTreeSource,
+    ParsedEdge,
     ParsedNode,
     _merge_edges,
+    append_frontmatter_edges,
     parse_edges,
     parse_readme,
     serialise_readme,
@@ -96,6 +98,134 @@ def _cmd_migrate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_suggest_edges(args: argparse.Namespace, store: GraphStore) -> int:
+    """Handler for ``ctx suggest-edges``."""
+    from context_engine.edge_suggester import EdgeSuggester, EdgeSuggestion  # noqa: PLC0415
+
+    target_node = store.get_node(args.node_id)
+    if target_node is None:
+        print(f"error: node '{args.node_id}' not found in the store", file=sys.stderr)
+        return 1
+
+    # Load all candidate nodes — skip strategy nodes and the target itself.
+    all_nodes = [
+        n
+        for n in store.get_nodes(store.all_node_ids())
+        if n.id != args.node_id and n.type != "strategy"
+    ]
+    if not all_nodes:
+        print("no suggestions — no other nodes in the store")
+        return 0
+
+    # Load target embedding if available; use knn to pre-rank candidates by similarity.
+    target_embedding: list[float] | None = None
+    if store.has_embedding(args.node_id):
+        import struct  # noqa: PLC0415
+
+        row = store._conn.execute(  # noqa: SLF001
+            "SELECT embedding FROM node_embeddings WHERE node_id=?", (args.node_id,)
+        ).fetchone()
+        if row is not None:
+            dim = store.embed_dim
+            target_embedding = list(struct.unpack(f"{dim}f", row[0]))
+            # Re-rank candidates by knn similarity and keep top max_candidates.
+            knn_results = store.knn(target_embedding, k=args.max_candidates)
+            knn_ids = {nid for nid, _ in knn_results}
+            ranked_candidates = [n for n in all_nodes if n.id in knn_ids]
+            # Preserve knn order.
+            id_rank = {nid: i for i, (nid, _) in enumerate(knn_results)}
+            ranked_candidates.sort(key=lambda n: id_rank.get(n.id, 999))
+            all_nodes = ranked_candidates if ranked_candidates else all_nodes
+
+    # Collect edge types already used in the graph for the system prompt hint.
+    existing_edge_types: list[str] = []
+    seen_types: set[str] = set()
+    for nid in store.all_node_ids():
+        for edge in store.out_edges(nid):
+            t = edge.metadata.get("type")
+            if t and t not in seen_types and t != "part_of":
+                seen_types.add(str(t))
+                existing_edge_types.append(str(t))
+
+    suggester = EdgeSuggester(model="claude-sonnet-4-5", max_candidates=args.max_candidates)
+
+    if not suggester.is_available():
+        print(
+            "EdgeSuggester unavailable — set ANTHROPIC_API_KEY and install the anthropic SDK",
+            file=sys.stderr,
+        )
+        return 1
+
+    suggestions: list[EdgeSuggestion] = suggester.suggest(
+        target_node=target_node,
+        candidate_nodes=all_nodes,
+        target_embedding=target_embedding,
+        existing_edge_types=existing_edge_types,
+    )
+
+    if not suggestions:
+        print("no suggestions")
+        return 0
+
+    if not args.interactive:
+        # Print a rich table.
+        try:
+            from rich.console import Console  # noqa: PLC0415
+            from rich.table import Table  # noqa: PLC0415
+
+            console = Console()
+            table = Table(title=f"Edge suggestions for '{args.node_id}'")
+            table.add_column("target", style="cyan")
+            table.add_column("type", style="magenta")
+            table.add_column("weight", justify="right")
+            table.add_column("rationale")
+            for s in suggestions:
+                table.add_row(s.target, s.type, f"{s.weight:.2f}", s.rationale)
+            console.print(table)
+        except ImportError:
+            # Fallback plain output if rich is unavailable.
+            for s in suggestions:
+                print(f"{s.target}  {s.type}  {s.weight:.2f}  {s.rationale}")
+        return 0
+
+    # Interactive mode.
+    if not args.tree:
+        print(
+            "error: --tree is required in interactive mode to write edges back to disk",
+            file=sys.stderr,
+        )
+        return 1
+
+    accepted: list[ParsedEdge] = []
+    for s in suggestions:
+        print(f"\n  target:    {s.target}")
+        print(f"  type:      {s.type}")
+        print(f"  weight:    {s.weight:.2f}")
+        print(f"  rationale: {s.rationale}")
+        try:
+            answer = input("[y/n/skip] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if answer == "y":
+            accepted.append(
+                ParsedEdge(
+                    source=args.node_id,
+                    target=s.target,
+                    edge_type=s.type,
+                    weight=s.weight,
+                    content=None,
+                )
+            )
+
+    if accepted:
+        append_frontmatter_edges(Path(args.tree), args.node_id, accepted)
+        print(f"\naccepted {len(accepted)} suggestion(s) and wrote to {args.node_id}/readme.md")
+    else:
+        print("\nno suggestions accepted")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="ctx")
     parser.add_argument("--db", default="graph.db", help="sqlite path")
@@ -152,6 +282,19 @@ def main(argv: list[str] | None = None) -> int:
         default="sentence-transformers",
         help="embedding backend (default: sentence-transformers, falls back to hash)",
     )
+
+    p_suggest = sub.add_parser("suggest-edges", help="propose edges from an LLM")
+    p_suggest.add_argument("node_id", help="id of the node to suggest edges for")
+    p_suggest.add_argument(
+        "--interactive",
+        action="store_true",
+        help="prompt y/n/skip for each suggestion",
+    )
+    p_suggest.add_argument(
+        "--tree",
+        help="path to knowledge/ root (required with --interactive to write back)",
+    )
+    p_suggest.add_argument("--max-candidates", type=int, default=50)
 
     args = parser.parse_args(argv)
     store = GraphStore(Path(args.db))
@@ -244,6 +387,9 @@ def main(argv: list[str] | None = None) -> int:
             f" using {type(embedder).__name__}"
         )
         return 0
+
+    if args.cmd == "suggest-edges":
+        return _cmd_suggest_edges(args, store)
 
     parser.print_help()
     return 1

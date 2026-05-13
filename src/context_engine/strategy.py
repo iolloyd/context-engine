@@ -12,12 +12,7 @@ weights that the feedback loop updates over time.
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
-
-from context_engine.types import Focus, Intent, Node, QueryTuple, TraversalStrategy
-
-if TYPE_CHECKING:
-    from context_engine.store import GraphStore
+from context_engine.types import Focus, Intent, Node, QueryTuple, StoreProtocol, TraversalStrategy
 
 # Edge types prioritised by focus.
 _FOCUS_EDGE_TYPES: dict[Focus, list[str]] = {
@@ -105,7 +100,7 @@ class StrategyResolver:
     feedback loop can tune edge-type weights without touching this file.
     """
 
-    def __init__(self, store: GraphStore) -> None:
+    def __init__(self, store: StoreProtocol) -> None:
         self.store = store
         self._bootstrapped = False
 

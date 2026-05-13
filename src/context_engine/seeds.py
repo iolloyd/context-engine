@@ -15,8 +15,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from context_engine.store import GraphStore
-from context_engine.types import Query
+from context_engine.types import Query, StoreProtocol
 
 if TYPE_CHECKING:
     from context_engine.composed_store import ComposedStore
@@ -25,15 +24,15 @@ if TYPE_CHECKING:
 class SeedSelector:
     def __init__(
         self,
-        store: GraphStore,
+        store: StoreProtocol,
         embed_fn: Callable[[str], list[float]] | None = None,
-        global_store: GraphStore | None = None,
+        global_store: StoreProtocol | None = None,
     ) -> None:
         self.store = store
         self.embed_fn = embed_fn
         self.global_store = global_store
 
-    def _composed(self) -> GraphStore | ComposedStore:
+    def _composed(self) -> StoreProtocol | ComposedStore:
         """Return a ComposedStore when a global store is present, else the project store."""
         if self.global_store is not None:
             from context_engine.composed_store import ComposedStore  # noqa: PLC0415

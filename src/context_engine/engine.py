@@ -17,7 +17,6 @@ from context_engine.classifier import Classifier, KeywordClassifier
 from context_engine.feedback import FeedbackApplier
 from context_engine.logic import LogicEngine, LogicResult
 from context_engine.seeds import SeedSelector
-from context_engine.store import GraphStore
 from context_engine.strategy import StrategyResolver, widen
 from context_engine.traversal import Traverser
 from context_engine.types import (
@@ -26,6 +25,7 @@ from context_engine.types import (
     Intent,
     Query,
     QueryTuple,
+    StoreProtocol,
 )
 
 if TYPE_CHECKING:
@@ -99,7 +99,7 @@ class OfflineSynthesiser:
 class ContextEngine:
     def __init__(
         self,
-        store: GraphStore,
+        store: StoreProtocol,
         classifier: Classifier | None = None,
         synthesiser: Synthesiser | None = None,
         embed_fn: Callable[[str], list[float]] | None = None,
@@ -107,7 +107,7 @@ class ContextEngine:
         auto_feedback: bool = False,
         downgrade_threshold: int = 3,
         tree_root: Path | None = None,
-        global_store: GraphStore | None = None,
+        global_store: StoreProtocol | None = None,
     ) -> None:
         self.store = store
         self.global_store = global_store
@@ -128,7 +128,7 @@ class ContextEngine:
         if global_store is not None:
             from context_engine.composed_store import ComposedStore  # noqa: PLC0415
 
-            traversal_store: GraphStore = ComposedStore(store, global_store)  # type: ignore[assignment]
+            traversal_store: StoreProtocol = ComposedStore(store, global_store)  # type: ignore[assignment]
         else:
             traversal_store = store
         self.traverser = Traverser(traversal_store, strategies=self.strategies)
@@ -165,14 +165,15 @@ class ContextEngine:
             if self.store.has_embedding(nid) and indexed_hash == source_hash:
                 already_fresh += 1
                 continue
-            self.store._set_embedding(nid, self._embedder.embed(node.content))
+            vec = self._embedder.embed(node.content)
             if source_hash is not None:
                 node.metadata["indexed_hash"] = source_hash
-                self.store.upsert_node(
-                    content=node.content,
-                    metadata=node.metadata,
-                    node_id=nid,
-                )
+            self.store.upsert_node(
+                content=node.content,
+                metadata=node.metadata,
+                node_id=nid,
+                embedding=vec,
+            )
             indexed += 1
         return indexed, already_fresh
 

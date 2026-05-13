@@ -19,6 +19,14 @@ dependencies = [
 embeddings = [
     "sentence-transformers>=2.7",
 ]
+postgres = [
+    "psycopg[binary]>=3.2",
+    "pgvector>=0.3",
+]
+serve = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

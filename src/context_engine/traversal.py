@@ -25,7 +25,6 @@ import heapq
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from context_engine.store import GraphStore
 from context_engine.strategy import STRUCTURAL_EDGE_TYPES, StrategyResolver, strategy_for
 from context_engine.types import (
     ContextSlice,
@@ -34,6 +33,7 @@ from context_engine.types import (
     Intent,
     Node,
     QueryTuple,
+    StoreProtocol,
     TraversalStrategy,
 )
 
@@ -61,7 +61,7 @@ class _PQItem:
 class Traverser:
     def __init__(
         self,
-        store: GraphStore,
+        store: StoreProtocol,
         strategies: StrategyResolver | None = None,
         observer: Callable[[TraceEvent], None] | None = None,
     ) -> None:

@@ -20,6 +20,7 @@ is available, falling back to ``HashEmbedder`` with a one-time stderr warning.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from typing import Protocol, runtime_checkable
 
@@ -145,11 +146,24 @@ _default_warned = False
 def default_embedder() -> Embedder:
     """Return the best available embedder.
 
-    Tries ``SentenceTransformerEmbedder`` first; falls back to ``HashEmbedder``
-    with a one-time warning printed to stderr so the user knows why semantic quality
-    may be poor.
+    Preference order:
+
+    1. ``AnthropicEmbedder`` (Voyage) when ``VOYAGE_API_KEY`` or
+       ``ANTHROPIC_API_KEY`` is set — produces 512-dim vectors that
+       match brain's pgvector column.
+    2. ``SentenceTransformerEmbedder`` (384-dim, local CPU).
+    3. ``HashEmbedder`` (deterministic placeholder) with a one-time
+       stderr warning so the user knows why semantic quality is poor.
     """
     global _default_warned
+
+    if os.environ.get("VOYAGE_API_KEY") or os.environ.get("ANTHROPIC_API_KEY"):
+        try:
+            return AnthropicEmbedder()
+        except ValueError:
+            # Key was set but the embedder couldn't initialise — fall through.
+            pass
+
     try:
         return SentenceTransformerEmbedder()
     except EmbedderUnavailable as exc:

@@ -7,8 +7,7 @@ Edge results are unioned across both stores.
 
 from __future__ import annotations
 
-from context_engine.store import GraphStore
-from context_engine.types import Edge, Node
+from context_engine.types import Edge, Node, StoreProtocol
 
 
 class ComposedStore:
@@ -18,7 +17,7 @@ class ComposedStore:
     get_node, get_nodes, out_edges, in_edges, get_edge, knn, all_node_ids.
     """
 
-    def __init__(self, project: GraphStore, global_: GraphStore) -> None:
+    def __init__(self, project: StoreProtocol, global_: StoreProtocol) -> None:
         self._project = project
         self._global = global_
 

@@ -7,9 +7,11 @@ open so the schema can extend without code changes. The query tuple
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -158,3 +160,77 @@ class FeedbackSignal(BaseModel):
     source: str = "llm"  # "llm", "user", "logic_engine"
     delta: float = 0.1
     query_tuple: QueryTuple | None = None
+
+
+@runtime_checkable
+class StoreProtocol(Protocol):
+    """Storage backend contract for nodes, edges, and embeddings.
+
+    Two implementations satisfy this protocol: ``GraphStore`` (SQLite +
+    ``sqlite-vec``) and ``PgGraphStore`` (Postgres + ``pgvector``). The
+    engine layer above the store talks to this interface and nothing
+    below it. See ADR 0002 for the rationale.
+    """
+
+    def upsert_node(
+        self,
+        content: str,
+        metadata: dict[str, Any] | None = ...,
+        node_id: str | None = ...,
+        embedding: list[float] | None = ...,
+    ) -> Node: ...
+
+    def get_node(self, node_id: str) -> Node | None: ...
+
+    def get_nodes(self, node_ids: Iterable[str]) -> list[Node]: ...
+
+    def delete_node(self, node_id: str) -> None: ...
+
+    def filter_nodes(self, where: dict[str, Any]) -> list[Node]: ...
+
+    def upsert_edge(
+        self,
+        source: str,
+        target: str,
+        edge_type: str,
+        weight: float = ...,
+        content: str | None = ...,
+        metadata: dict[str, Any] | None = ...,
+        edge_id: str | None = ...,
+    ) -> Edge: ...
+
+    def get_edge(self, edge_id: str) -> Edge | None: ...
+
+    def out_edges(
+        self,
+        node_id: str,
+        edge_types: list[str] | None = ...,
+        weight_floor: float = ...,
+    ) -> list[Edge]: ...
+
+    def in_edges(
+        self,
+        node_id: str,
+        edge_types: list[str] | None = ...,
+        weight_floor: float = ...,
+    ) -> list[Edge]: ...
+
+    def update_edge_weight(self, edge_id: str, new_weight: float) -> None: ...
+
+    def has_embedding(self, node_id: str) -> bool: ...
+
+    def get_embedding(self, node_id: str) -> list[float] | None: ...
+
+    def knn(self, vec: list[float], k: int = ...) -> list[tuple[str, float]]: ...
+
+    def all_node_ids(self) -> list[str]: ...
+
+    def all_edges(self) -> list[Edge]: ...
+
+    def node_count(self) -> int: ...
+
+    def edge_count(self) -> int: ...
+
+    def transaction(self) -> AbstractContextManager[Any]: ...
+
+    def close(self) -> None: ...

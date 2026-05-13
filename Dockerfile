@@ -72,11 +72,16 @@ EXPOSE 8080
 # makes the policy obvious to anyone reading the file.
 USER nonroot
 
+# ENTRYPOINT is the Python interpreter, CMD picks the module. Lets a
+# Fly scheduled Machine override CMD (e.g. `-m context_engine.brain_importer
+# --source memories`) to run the importer instead of the server, sharing
+# the same image and the CTX_PG_DSN secret.
+#
 # server.py reads HOST / PORT / LOG_LEVEL from env when invoked via the
 # module entry point, so this CMD works on any platform that injects PORT
 # (App Runner, Cloud Run, Heroku, Fargate-with-port-mapping).
-ENTRYPOINT ["/opt/venv/bin/python", "-m", "context_engine.server"]
-CMD []
+ENTRYPOINT ["/opt/venv/bin/python"]
+CMD ["-m", "context_engine.server"]
 
 # ── follow-up notes ────────────────────────────────────────────────────────
 #

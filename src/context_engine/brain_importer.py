@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from dataclasses import dataclass
 from typing import Any
@@ -241,17 +242,29 @@ def main(argv: list[str] | None = None) -> int:
 
     Two DSNs because brain's docs and the cx graph may live in different
     Postgres instances even though framebrain co-locates them today.
+
+    When the DSN flags are omitted both fall back to the ``CTX_PG_DSN``
+    env var — same secret the engine uses. Lets the importer run inside
+    distroless containers (Fly scheduled Machines) where no shell is
+    available to do ``--pg-dsn "$CTX_PG_DSN"`` expansion.
     """
+
+    env_dsn = os.environ.get("CTX_PG_DSN")
 
     parser = argparse.ArgumentParser(
         prog="brain-importer",
         description="Import brain docs into the context-engine graph layer.",
     )
-    parser.add_argument("--brain-dsn", required=True, help="postgres DSN for brain's database")
+    parser.add_argument(
+        "--brain-dsn",
+        default=env_dsn,
+        help="postgres DSN for brain's database (default: $CTX_PG_DSN)",
+    )
     parser.add_argument(
         "--pg-dsn",
-        required=True,
-        help="postgres DSN for the destination cx_nodes / cx_edges schema",
+        default=env_dsn,
+        help="postgres DSN for the destination cx_nodes / cx_edges schema "
+        "(default: $CTX_PG_DSN)",
     )
     parser.add_argument(
         "--source",
@@ -268,6 +281,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--embed-dim", type=int, default=512)
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
+
+    if not args.brain_dsn or not args.pg_dsn:
+        parser.error(
+            "missing DSN: pass --brain-dsn and --pg-dsn, "
+            "or set CTX_PG_DSN in the environment"
+        )
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,

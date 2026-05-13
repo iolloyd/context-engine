@@ -71,6 +71,20 @@ def brain_schema() -> Iterator[str]:
                 )
                 """
             )
+            cur.execute(
+                f"""
+                CREATE TABLE "{schema}".memories (
+                    id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+                    content    text NOT NULL,
+                    embedding  vector({EMBED_DIM}),
+                    source     text,
+                    tags       text[] DEFAULT '{{}}'::text[],
+                    metadata   jsonb NOT NULL DEFAULT '{{}}'::jsonb,
+                    domain     text NOT NULL DEFAULT 'general',
+                    created_at timestamptz NOT NULL DEFAULT now()
+                )
+                """
+            )
         yield schema
     finally:
         with conn.cursor() as cur:
@@ -209,3 +223,91 @@ def test_reimport_is_idempotent(brain_schema: str, cx_store: PgGraphStore) -> No
     # tables means re-running upserts rather than duplicating.
     assert cx_store.node_count() == 4
     assert cx_store.edge_count() == 2
+
+
+# ── memories source ────────────────────────────────────────────────────────
+
+
+def _seed_memories(schema: str) -> list[str]:
+    """Insert a few memory rows; return their UUIDs as strings."""
+    assert DSN is not None
+    conn = psycopg.connect(DSN, autocommit=True)
+    register_vector(conn)
+    ids: list[str] = []
+    try:
+        with conn.cursor() as cur:
+            rows = [
+                ("notion ingest: Q3 review took longer than expected",
+                 [1.0, 0.0, 0.0, 0.0], "notion-sync", ["finance", "retros"], "general"),
+                ("slack capture: bug in the deploy pipeline",
+                 [0.0, 1.0, 0.0, 0.0], "slack:lloyd", ["bug"], "general"),
+                ("notion ingest: customer call notes",
+                 None, "notion-sync", ["customer"], "general"),
+            ]
+            for content, embedding, source, tags, domain in rows:
+                cur.execute(
+                    f"""
+                    INSERT INTO "{schema}".memories
+                        (content, embedding, source, tags, domain)
+                    VALUES (%s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (content, embedding, source, tags, domain),
+                )
+                row = cur.fetchone()
+                assert row is not None
+                ids.append(str(row[0]))
+    finally:
+        conn.close()
+    return ids
+
+
+def test_import_memories(brain_schema: str, cx_store: PgGraphStore) -> None:
+    mem_ids = _seed_memories(brain_schema)
+    report = import_from_brain(
+        DSN, cx_store, source="memories", brain_schema=brain_schema
+    )
+
+    assert report.memories_imported == 3
+    assert report.nodes_imported == 0
+    assert report.edges_imported == 0
+    assert cx_store.node_count() == 3
+
+    first = cx_store.get_node(f"memory/{mem_ids[0]}")
+    assert first is not None
+    assert "Q3 review" in first.content
+    assert first.metadata["type"] == "memory"
+    assert first.metadata["source"] == "notion-sync"
+    assert first.metadata["tags"] == ["finance", "retros"]
+    assert first.metadata["brain_memory_id"] == mem_ids[0]
+
+    # Embedding round-trips for memories that have one.
+    vec = cx_store.get_embedding(f"memory/{mem_ids[0]}")
+    assert vec is not None
+    assert len(vec) == EMBED_DIM
+    assert cx_store.has_embedding(f"memory/{mem_ids[2]}") is False
+
+
+def test_import_both_combines_nodes_and_memories(
+    brain_schema: str, cx_store: PgGraphStore
+) -> None:
+    _seed_brain(brain_schema)
+    _seed_memories(brain_schema)
+
+    report = import_from_brain(
+        DSN, cx_store, source="both", brain_schema=brain_schema
+    )
+
+    # 4 docs + 3 memories + 2 edges
+    assert report.nodes_imported == 4
+    assert report.memories_imported == 3
+    assert report.edges_imported == 2
+    assert cx_store.node_count() == 7
+    assert cx_store.edge_count() == 2
+
+
+def test_invalid_source_rejected(brain_schema: str, cx_store: PgGraphStore) -> None:
+    with pytest.raises(ValueError, match="source must be one of"):
+        import_from_brain(
+            DSN, cx_store, source="bogus", brain_schema=brain_schema
+        )

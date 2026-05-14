@@ -145,6 +145,39 @@ class ContextEngine:
             "strategy_downgrades": 0,
         }
 
+    def boot_check_embed_dim(self, expected_dim: int) -> None:
+        """Verify the embedder produces vectors matching ``expected_dim``.
+
+        Call once at server startup to fail fast on a misconfigured deploy
+        rather than blowing up the first ``/recall``. Probes by running
+        ``self._embedder.embed("__ctx_boot_probe__")`` and measuring the
+        result length — the cheapest way to confirm what the embedder
+        actually produces (independent of how it advertises its dim).
+
+        No-op if the engine has no ``Embedder`` (caller wired an
+        ``embed_fn`` directly; we have nothing to introspect).
+
+        Raises ``RuntimeError`` with an actionable message on mismatch.
+        """
+        if self._embedder is None:
+            return
+        probe = self._embedder.embed("__ctx_boot_probe__")
+        if len(probe) != expected_dim:
+            raise RuntimeError(
+                f"embedder ↔ store dim mismatch: embedder produced "
+                f"{len(probe)}-dim vectors but the store expects "
+                f"{expected_dim}-dim. Common causes:\n"
+                f"  • CTX_EMBED_DIM mismatches the embedder's actual output "
+                f"(voyage-3-lite=512, sentence-transformers default=384, "
+                f"HashEmbedder=384).\n"
+                f"  • VOYAGE_API_KEY missing → default_embedder() fell back "
+                f"to a smaller local embedder.\n"
+                f"  • Postgres schema was applied at a different dim than "
+                f"the embedder produces.\n"
+                f"Fix: align CTX_EMBED_DIM with the embedder, set/unset "
+                f"VOYAGE_API_KEY, or re-run the schema migration."
+            )
+
     def index_all(self) -> tuple[int, int]:
         """Backfill embeddings for every node that does not yet have one
         or whose source hash has changed.

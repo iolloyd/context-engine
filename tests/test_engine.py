@@ -148,6 +148,42 @@ def test_engine_uses_default_embedder_when_none_passed() -> None:
     assert isinstance(engine._embedder, (SentenceTransformerEmbedder, HashEmbedder))
 
 
+def test_boot_check_embed_dim_passes_when_dims_match() -> None:
+    """HashEmbedder(dim=384) against a 384-dim store: no raise."""
+    from context_engine.embedding import HashEmbedder
+
+    store = GraphStore(":memory:")  # default embed_dim=384
+    engine = ContextEngine(store, embedder=HashEmbedder(dim=384))
+    engine.boot_check_embed_dim(384)  # raises on mismatch; we expect silence
+
+
+def test_boot_check_embed_dim_raises_on_mismatch() -> None:
+    """HashEmbedder(dim=384) against an expected 512: clear RuntimeError."""
+    import pytest
+
+    from context_engine.embedding import HashEmbedder
+
+    store = GraphStore(":memory:")
+    engine = ContextEngine(store, embedder=HashEmbedder(dim=384))
+    with pytest.raises(RuntimeError, match=r"dim mismatch"):
+        engine.boot_check_embed_dim(512)
+
+
+def test_boot_check_embed_dim_noop_without_embedder() -> None:
+    """Engine constructed with only an embed_fn has no Embedder to probe;
+    boot check is a no-op (caller is responsible for dim consistency)."""
+
+    def fixed_dim_embed(text: str) -> list[float]:
+        return [0.0] * 384
+
+    store = GraphStore(":memory:")
+    engine = ContextEngine(store, embed_fn=fixed_dim_embed)
+    assert engine._embedder is None
+    # Even a wildly wrong expected_dim raises nothing — there's no embedder
+    # to probe, so we trust the caller.
+    engine.boot_check_embed_dim(999_999)
+
+
 def test_engine_composes_global_graph_for_seeds() -> None:
     """Global-store nodes are visible in query results when the project store has none."""
     from context_engine.embedding import HashEmbedder

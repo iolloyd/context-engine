@@ -164,6 +164,16 @@ def _build_default_app() -> FastAPI:
     embed_dim = int(os.environ.get("CTX_EMBED_DIM", "512"))
     store = PgGraphStore(dsn=dsn, embed_dim=embed_dim)
     engine = ContextEngine(store=store)
+    # Fail fast on embedder/store dim mismatch — without this guard, a
+    # misconfigured deploy (e.g. VOYAGE_API_KEY missing → 384-dim fallback
+    # against a 512-dim Postgres column) would only surface on the first
+    # user /recall, after CDN propagation, after the user has already
+    # blamed the integration. Better to refuse to come up.
+    try:
+        engine.boot_check_embed_dim(store.embed_dim)
+    except RuntimeError as exc:
+        log.error("context-engine: %s", exc)
+        raise SystemExit(2) from exc
     return build_app(engine)
 
 

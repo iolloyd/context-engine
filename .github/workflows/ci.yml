@@ -23,5 +23,55 @@ jobs:
           pip install -e ".[dev]"
       - name: Lint
         run: ruff check src tests
-      - name: Test
+      - name: Test (SQLite + offline only)
         run: pytest -q
+
+  test-postgres:
+    # Runs the StoreProtocol parity suite against a real Postgres + pgvector
+    # service container. Without this job the postgres branch of
+    # tests/test_store_parity.py auto-skips (CTX_PG_DSN unset), so the
+    # PgGraphStore parity claim was untested in CI until now. Only one
+    # Python version — the parity surface is Python-version-independent.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install (with postgres extra)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,postgres]"
+
+      - name: Enable pgvector extension on the service db
+        env:
+          PGPASSWORD: postgres
+        run: |
+          # The pgvector/pgvector image preinstalls the extension files but
+          # doesn't enable it in any database. PgGraphStore calls
+          # register_vector() at connect time, which needs the extension live.
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client
+          psql -h localhost -U postgres -d postgres -c 'CREATE EXTENSION IF NOT EXISTS vector'
+
+      - name: Test (parity suite against Postgres)
+        env:
+          CTX_PG_DSN: postgresql://postgres:postgres@localhost:5432/postgres
+        run: |
+          # All test_store_parity.py tests run against BOTH backends now.
+          # The rest of the suite is backend-agnostic and unaffected.
+          pytest -q tests/test_store_parity.py -v

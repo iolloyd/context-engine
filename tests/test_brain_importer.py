@@ -9,6 +9,7 @@ needs a live Postgres with pgvector available.
 
 from __future__ import annotations
 
+import json
 import os
 import uuid
 from collections.abc import Iterator
@@ -82,6 +83,19 @@ def brain_schema() -> Iterator[str]:
                     metadata   jsonb NOT NULL DEFAULT '{{}}'::jsonb,
                     domain     text NOT NULL DEFAULT 'general',
                     created_at timestamptz NOT NULL DEFAULT now()
+                )
+                """
+            )
+            cur.execute(
+                f"""
+                CREATE TABLE "{schema}".cx_entities (
+                    id              text PRIMARY KEY,
+                    canonical_name  text NOT NULL,
+                    kind            text NOT NULL,
+                    aliases         text[] NOT NULL DEFAULT '{{}}'::text[],
+                    metadata        jsonb NOT NULL DEFAULT '{{}}'::jsonb,
+                    created_at      timestamptz NOT NULL DEFAULT now(),
+                    updated_at      timestamptz NOT NULL DEFAULT now()
                 )
                 """
             )
@@ -311,3 +325,153 @@ def test_invalid_source_rejected(brain_schema: str, cx_store: PgGraphStore) -> N
         import_from_brain(
             DSN, cx_store, source="bogus", brain_schema=brain_schema
         )
+
+
+# ── canonical entities + mentions edges ────────────────────────────────────
+
+
+def _seed_entities(schema: str) -> None:
+    """Seed a couple of canonical entities into cx_entities."""
+    assert DSN is not None
+    conn = psycopg.connect(DSN, autocommit=True)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                INSERT INTO "{schema}".cx_entities
+                    (id, canonical_name, kind, aliases)
+                VALUES
+                    ('prospect/boex',       'Boex',            'prospect',
+                        ARRAY['boex', 'Boex Ltd']),
+                    ('regulator/mica',      'MiCA',            'regulator',
+                        ARRAY['mica'])
+                """
+            )
+    finally:
+        conn.close()
+
+
+def _seed_memories_with_entities(schema: str) -> list[str]:
+    """Insert two memories with metadata.entities + one without. Returns the
+    three memory UUIDs in insertion order."""
+    assert DSN is not None
+    conn = psycopg.connect(DSN, autocommit=True)
+    register_vector(conn)
+    ids: list[str] = []
+    try:
+        with conn.cursor() as cur:
+            rows = [
+                ("Boex licensing concerns under MiCA",
+                 None, "slack", [],
+                 json.dumps({"entities": ["prospect/boex", "regulator/mica"]}),
+                 "general"),
+                ("Boex Ltd terms call summary",
+                 None, "notion-sync", [],
+                 json.dumps({"entities": ["prospect/boex"]}),
+                 "general"),
+                ("unrelated memo", None, "claude-desktop", [], "{}", "general"),
+            ]
+            for content, embedding, source, tags, metadata, domain in rows:
+                cur.execute(
+                    f"""
+                    INSERT INTO "{schema}".memories
+                        (content, embedding, source, tags, metadata, domain)
+                    VALUES (%s, %s, %s, %s, %s::jsonb, %s)
+                    RETURNING id
+                    """,
+                    (content, embedding, source, tags, metadata, domain),
+                )
+                row = cur.fetchone()
+                assert row is not None
+                ids.append(str(row[0]))
+    finally:
+        conn.close()
+    return ids
+
+
+def test_import_entities_as_graph_nodes(
+    brain_schema: str, cx_store: PgGraphStore
+) -> None:
+    _seed_entities(brain_schema)
+    report = import_from_brain(
+        DSN, cx_store, source="memories", brain_schema=brain_schema
+    )
+
+    assert report.entities_imported == 2
+
+    boex = cx_store.get_node("prospect/boex")
+    assert boex is not None
+    assert boex.metadata["type"] == "entity"
+    assert boex.metadata["kind"] == "prospect"
+    assert boex.metadata["canonical_name"] == "Boex"
+    assert "Boex Ltd" in boex.metadata["aliases"]
+    # Entities are canonical labels — no embedding.
+    assert cx_store.has_embedding("prospect/boex") is False
+
+
+def test_import_lays_mentions_edges_from_memories(
+    brain_schema: str, cx_store: PgGraphStore
+) -> None:
+    _seed_entities(brain_schema)
+    mem_ids = _seed_memories_with_entities(brain_schema)
+
+    report = import_from_brain(
+        DSN, cx_store, source="memories", brain_schema=brain_schema
+    )
+
+    # 3 memories + 2 entities = 5 nodes; mention edges: mem0→boex,
+    # mem0→mica, mem1→boex (the third memory has no entities).
+    assert report.memories_imported == 3
+    assert report.entities_imported == 2
+    assert report.mention_edges_imported == 3
+
+    out0 = cx_store.out_edges(f"memory/{mem_ids[0]}")
+    assert {(e.target, e.type) for e in out0} == {
+        ("prospect/boex", "mentions"),
+        ("regulator/mica", "mentions"),
+    }
+
+    out1 = cx_store.out_edges(f"memory/{mem_ids[1]}")
+    assert {(e.target, e.type) for e in out1} == {("prospect/boex", "mentions")}
+
+    out2 = cx_store.out_edges(f"memory/{mem_ids[2]}")
+    assert out2 == []
+
+
+def test_entity_and_mentions_import_is_idempotent(
+    brain_schema: str, cx_store: PgGraphStore
+) -> None:
+    _seed_entities(brain_schema)
+    _seed_memories_with_entities(brain_schema)
+
+    import_from_brain(DSN, cx_store, source="memories", brain_schema=brain_schema)
+    import_from_brain(DSN, cx_store, source="memories", brain_schema=brain_schema)
+
+    # Re-running upserts rather than duplicating: still 5 nodes
+    # (3 memories + 2 entities) and 3 mention edges.
+    assert cx_store.node_count() == 5
+    boex_in = cx_store.in_edges("prospect/boex", edge_types=["mentions"])
+    assert len(boex_in) == 2
+
+
+def test_no_cx_entities_table_is_a_silent_noop(
+    brain_schema: str, cx_store: PgGraphStore
+) -> None:
+    """Pre-Phase 4a brain schemas don't have cx_entities. The importer
+    detects this and skips the entity + mentions passes silently."""
+    assert DSN is not None
+    conn = psycopg.connect(DSN, autocommit=True)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f'DROP TABLE "{brain_schema}".cx_entities')
+    finally:
+        conn.close()
+
+    _seed_memories_with_entities(brain_schema)
+    report = import_from_brain(
+        DSN, cx_store, source="memories", brain_schema=brain_schema
+    )
+
+    assert report.memories_imported == 3
+    assert report.entities_imported == 0
+    assert report.mention_edges_imported == 0

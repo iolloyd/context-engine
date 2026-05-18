@@ -56,9 +56,16 @@ class ImportReport:
     nodes_imported: int
     edges_imported: int
     memories_imported: int = 0
+    entities_imported: int = 0
+    mention_edges_imported: int = 0
 
 
 VALID_SOURCES = ("nodes", "memories", "both")
+
+# Phase 4a: when ``cx_entities`` is present in brain, project the
+# canonical entities as graph nodes and lay down ``mentions`` edges
+# from memories to entities they reference (via
+# ``memory.metadata.entities``). Both passes are idempotent.
 
 
 def import_from_brain(
@@ -94,6 +101,8 @@ def import_from_brain(
     nodes_imported = 0
     edges_imported = 0
     memories_imported = 0
+    entities_imported = 0
+    mention_edges_imported = 0
     try:
         with conn.cursor() as cur:
             if source in ("nodes", "both"):
@@ -101,13 +110,105 @@ def import_from_brain(
                 edges_imported = _import_edges(cur, store, domain, brain_schema)
             if source in ("memories", "both"):
                 memories_imported = _import_memories(cur, store, domain, brain_schema)
+            # Always run the entity + mentions pass when cx_entities
+            # exists. It's a no-op when the table is missing
+            # (pre-Phase 4a brain).
+            if _has_cx_entities(cur, brain_schema):
+                entities_imported = _import_entities(cur, store, brain_schema)
+                mention_edges_imported = _import_mentions(
+                    cur, store, domain, brain_schema
+                )
     finally:
         conn.close()
     return ImportReport(
         nodes_imported=nodes_imported,
         edges_imported=edges_imported,
         memories_imported=memories_imported,
+        entities_imported=entities_imported,
+        mention_edges_imported=mention_edges_imported,
     )
+
+
+def _has_cx_entities(cur: psycopg.Cursor[Any], brain_schema: str) -> bool:
+    cur.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1
+              FROM information_schema.tables
+             WHERE table_schema = %s
+               AND table_name = 'cx_entities'
+        )
+        """,
+        (brain_schema,),
+    )
+    row = cur.fetchone()
+    return bool(row and row[0])
+
+
+def _import_entities(
+    cur: psycopg.Cursor[Any],
+    store: StoreProtocol,
+    brain_schema: str,
+) -> int:
+    cur.execute(
+        f'SELECT id, canonical_name, kind, aliases, metadata '
+        f'FROM "{brain_schema}".cx_entities'
+    )
+    rows = cur.fetchall()
+    count = 0
+    for entity_id, canonical_name, kind, aliases, metadata in rows:
+        meta = {
+            **(metadata or {}),
+            "type": "entity",
+            "kind": kind,
+            "canonical_name": canonical_name,
+            "aliases": list(aliases) if aliases else [],
+        }
+        # Entities are small canonical nodes; no embedding (we don't
+        # want them showing up in similarity search as ad-hoc memories).
+        store.upsert_node(
+            content=canonical_name,
+            metadata=meta,
+            node_id=entity_id,
+            embedding=None,
+        )
+        count += 1
+    return count
+
+
+def _import_mentions(
+    cur: psycopg.Cursor[Any],
+    store: StoreProtocol,
+    domain: str | None,
+    brain_schema: str,
+) -> int:
+    sql = f"""
+        SELECT id, metadata
+          FROM "{brain_schema}".memories
+         WHERE metadata ? 'entities'
+           AND jsonb_array_length(metadata->'entities') > 0
+         {"AND domain = %s" if domain else ""}
+    """
+    cur.execute(sql, (domain,) if domain else ())
+    rows = cur.fetchall()
+    count = 0
+    for brain_id, metadata in rows:
+        entities = (metadata or {}).get("entities", [])
+        src = f"memory/{brain_id}"
+        for entity_id in entities:
+            if not isinstance(entity_id, str) or not entity_id:
+                continue
+            edge_id = f"{src}->{entity_id}:mentions"
+            store.upsert_edge(
+                source=src,
+                target=entity_id,
+                edge_type="mentions",
+                weight=1.0,
+                metadata={"brain_memory_id": str(brain_id)},
+                edge_id=edge_id,
+            )
+            count += 1
+    return count
 
 
 def _import_nodes(
@@ -311,6 +412,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"nodes imported:    {report.nodes_imported}")
     print(f"edges imported:    {report.edges_imported}")
     print(f"memories imported: {report.memories_imported}")
+    print(f"entities imported: {report.entities_imported}")
+    print(f"mentions imported: {report.mention_edges_imported}")
     return 0
 
 
